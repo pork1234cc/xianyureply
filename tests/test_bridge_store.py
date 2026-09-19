@@ -1,6 +1,7 @@
 """固定路由、双向去重、跨账号和崩溃恢复的业务测试。"""
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -260,15 +261,65 @@ def test_recovery_gaps_are_persisted_without_notification_flood(store):
     assert store.sync_positions("A1")[1]["gap"] == "历史正文结构未知"
 
 
-def test_authorized_non_text_reply_gets_explicit_rejection(store):
+def test_authorized_unsupported_reply_gets_explicit_rejection(store):
     raw = feishu_event()
-    raw["event"]["message"]["message_type"] = "image"
-    raw["event"]["message"]["content"] = '{"image_key":"fake"}'
+    raw["event"]["message"]["message_type"] = "audio"
+    raw["event"]["message"]["content"] = '{"file_key":"fake"}'
     binding = dict(app_id="app", tenant_key="tenant", open_id="owner", chat_id="chat")
     assert route_operator(store, raw, binding) is None
     notices = store.db.execute("SELECT text FROM feishu_outbox").fetchall()
     assert len(notices) == 1
-    assert "纯文本" in notices[0][0]
+    assert "PNG/JPG/JPEG" in notices[0][0]
+
+
+def test_image_route_dedup_queue_and_reopen(store):
+    forward(store, incoming(), "original")
+    raw = feishu_event()
+    raw["event"]["message"].update(message_type="image", content='{"image_key":"img-test"}',
+                                    create_time="300000")
+    binding = dict(app_id="app", tenant_key="tenant", open_id="owner", chat_id="chat")
+    task = route_operator(store, raw, binding, now=300)
+    assert task["message_type"] == "image"
+    assert task["image_key"] == "img-test"
+    assert (task["account_key"], task["customer_uid"]) == ("A1", "buyer")
+    assert route_operator(store, raw, binding, now=300)["task_id"] == task["task_id"]
+    following = store.receive_reply(reply("text-after-image", "reply", "说明", 301), now=301)
+    assert following["cid"] == task["cid"]
+    store.state("A1", "ONLINE")
+    claimed = store.claim_reply("A1", "request", "uuid", now=301)
+    assert claimed["task_id"] == task["task_id"]
+    assert store.claim_reply("A1", "request2", "uuid2", now=310) is None
+    assert store.db.execute("PRAGMA user_version").fetchone()[0] == 4
+    path = store.db.execute("PRAGMA database_list").fetchone()[2]
+    reopened = Store(Path(path))
+    try:
+        assert reopened.task(task["task_id"])["image_key"] == "img-test"
+        reopened.recover()
+        assert reopened.task(task["task_id"])["state"] == "UNKNOWN"
+    finally:
+        reopened.close()
+
+
+def test_image_without_direct_parent_never_uses_root(store):
+    forward(store, incoming(), "root")
+    raw = feishu_event()
+    raw["event"]["message"].update(message_type="image", content='{"image_key":"img-test"}',
+                                    create_time="300000", parent_id="", root_id="root")
+    binding = dict(app_id="app", tenant_key="tenant", open_id="owner", chat_id="chat")
+    assert route_operator(store, raw, binding, now=300) is None
+    assert store.db.execute("SELECT count(*) FROM reply_tasks").fetchone()[0] == 0
+
+
+def test_image_failure_receipt_includes_reason(store):
+    forward(store, incoming())
+    event = reply()
+    event.update(message_type="image", image_key="img-test", text="[图片]")
+    task = store.receive_reply(event, now=300)
+    store.state("A1", "ONLINE")
+    store.claim_reply("A1", "req", "uuid", now=300)
+    store.finish_reply(task["task_id"], "FAILED", error="飞书图片下载失败，请检查应用权限")
+    receipt = store.db.execute("SELECT text FROM feishu_outbox WHERE kind='RECEIPT'").fetchone()[0]
+    assert "飞书图片下载失败，请检查应用权限" in receipt
 
 
 def test_new_customer_message_quotes_card_without_refreshing_it(store):

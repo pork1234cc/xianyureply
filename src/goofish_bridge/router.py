@@ -8,10 +8,10 @@ def route_operator(store, raw, binding, ttl=600, now=None):
     if not event:
         identity = operator_identity(raw, binding["app_id"], binding["open_id"], binding)
         if identity:
-            store.notice(f"unsupported:{identity['message_id']}", "首版只支持非空纯文本回复；当前内容未发送，请重新引用原客户消息提交。")
+            store.notice(f"unsupported:{identity['message_id']}", "仅支持非空文字或单张 PNG/JPG/JPEG 图片消息；当前内容未发送，请重新引用原客户消息提交。")
         return None
     if not event["parent_id"]:
-        text = store.status_text() if event["text"] == "状态" else "请直接引用机器人转发的原客户消息，输入纯文本回复。"
+        text = store.status_text() if event["text"] == "状态" else "请直接引用机器人转发的原客户消息，发送文字或单张 PNG/JPG/JPEG 图片。"
         store.notice(f"operator:{event['message_id']}", text)
         return None
     if len(event["text"]) > 2000:

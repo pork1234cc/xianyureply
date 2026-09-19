@@ -21,7 +21,7 @@ class Store:
         self.db.execute("PRAGMA synchronous=FULL")
         self.db.execute("PRAGMA foreign_keys=ON")
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
-        if version not in (0, 1, 2, 3):
+        if version not in (0, 1, 2, 3, 4):
             raise ValueError("数据库版本不兼容，拒绝降级或覆盖")
         self.db.executescript("""
         CREATE TABLE IF NOT EXISTS accounts (
@@ -80,7 +80,11 @@ class Store:
                 self.db.execute("ALTER TABLE reply_tasks ADD COLUMN card_key TEXT")
             if "expanded" not in card_columns:
                 self.db.execute("ALTER TABLE feishu_cards ADD COLUMN expanded INTEGER NOT NULL DEFAULT 0")
-            self.db.execute("PRAGMA user_version=3")
+            if "message_type" not in reply_columns:
+                self.db.execute("ALTER TABLE reply_tasks ADD COLUMN message_type TEXT NOT NULL DEFAULT 'text'")
+            if "image_key" not in reply_columns:
+                self.db.execute("ALTER TABLE reply_tasks ADD COLUMN image_key TEXT NOT NULL DEFAULT ''")
+            self.db.execute("PRAGMA user_version=4")
 
     def close(self):
         self.db.close()
@@ -252,10 +256,11 @@ class Store:
         with self.db:
             self.db.execute("""INSERT INTO reply_tasks
               (task_id,feishu_reply_message_id,event_id,account_key,account_uid,cid,customer_uid,
-               text,created_at,expires_at,state,card_key) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+               text,created_at,expires_at,state,card_key,message_type,image_key) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                             (task, event["message_id"], event.get("event_id", ""), target["account_key"],
                              target["account_uid"], target["cid"], target["customer_uid"], event["text"],
-                             created, created + ttl, state, card["card_key"] if card else None))
+                             created, created + ttl, state, card["card_key"] if card else None,
+                             event.get("message_type", "text"), event.get("image_key", "")))
             if state != "QUEUED":
                 self._receipt(task, state)
         return self.task(task)
@@ -323,8 +328,9 @@ class Store:
                                (row["card_key"],)).fetchone()
         prefix = (f"闲鱼账号：{self.account(row['account_key'])['name']}\n"
                   f"客户昵称：{card['customer_name'] if card else '客户'}\n")
+        detail = f"\n原因：{row['error']}" if row["message_type"] == "image" and row["error"] else ""
         self._notice(f"receipt:{task}:{state}",
-                     f"{prefix}回复：{row['text']}\n状态：{labels[state]}",
+                     f"{prefix}回复：{row['text']}\n状态：{labels[state]}{detail}",
                      "RECEIPT", reply=task)
 
     def recover(self):

@@ -51,6 +51,20 @@ def test_binding_restricts_chat():
     assert parse_operator_event(event(), "app", "owner", binding) is None
 
 
+@pytest.mark.parametrize("key", ["img-test", "", None, 42, " " * 3, "a" * 513])
+def test_image_event_resource_validation(key):
+    raw = event()
+    raw["event"]["message"].update(message_type="image", content=json.dumps({"image_key": key}))
+    parsed = parse_operator_event(raw, "app", "owner")
+    if key == "img-test":
+        assert parsed["message_type"] == "image"
+        assert parsed["image_key"] == key
+        assert parsed["parent_id"] == "original"
+        assert parsed["text"] == "[图片]"
+    else:
+        assert parsed is None
+
+
 @pytest.mark.asyncio
 async def test_sdk_receiver_is_collected_before_disconnect(monkeypatch):
     import lark_oapi as lark

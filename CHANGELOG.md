@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- 增加飞书直接引用的单张 PNG/JPG/JPEG 图片回复：资源下载、实际格式校验、目标闲鱼账号上传、原连接发送和失败原因提示；回复任务数据库非破坏性升级到 v4，保留文本路径、去重与未知结果不重发规则。重启后用户已确认图片发送测试成功。
+
 - 启动时读取比特闲鱼窗口分组，按 UID 对比本地绑定、去重并自动补建账号；支持动态账号数量、窗口 ID 固定来源及独立 `sync-accounts` 命令。
 
 ## [0.4.0] - 2026-09-07

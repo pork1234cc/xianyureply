@@ -97,3 +97,61 @@ async def test_ipc_receipt_waits_for_main_process_commit():
     assert not task.done()
     worker.futures[emitted[0]["id"]].set_result(True)
     await task
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode,expected", [
+    ("accept", "SERVER_ACCEPTED"), ("upload-fail", "FAILED"),
+    ("timeout", "UNKNOWN"), ("expires-during-upload", "EXPIRED"),
+    ("disconnect-during-upload", "FAILED"), ("wrong-account", "FAILED"),
+])
+async def test_worker_image_send_stages(monkeypatch, mode, expected):
+    sent, reports, uploads = [], [], []
+    disconnected = False
+
+    async def request(frame):
+        sent.append(frame)
+        custom = frame["body"][0]["content"]["custom"]
+        assert custom["type"] == 2
+        payload = json.loads(base64.b64decode(custom["data"]))
+        assert payload == {"contentType": 2, "image": {"pics": [
+            {"type": 0, "url": "https://img.alicdn.com/test.jpg", "width": 20, "height": 30}]}}
+        assert frame["body"][1]["actualReceivers"] == ["buyer@goofish", "account@goofish"]
+        if mode == "timeout":
+            raise TimeoutError
+        return {"code": 200, "body": {"messageId": "server-image"}}
+
+    async def emit(kind, payload, durable=False):
+        reports.append(payload)
+
+    def prepare(config, session, task):
+        nonlocal disconnected
+        assert session is worker.session
+        uploads.append(task)
+        if mode == "upload-fail":
+            raise account_worker.MediaError("闲鱼图片上传失败")
+        if mode == "expires-during-upload":
+            task["expires_at"] = 0
+        if mode == "disconnect-during-upload":
+            disconnected = True
+        return {"url": "https://img.alicdn.com/test.jpg", "width": 20, "height": 30}
+
+    worker = account_worker.Worker.__new__(account_worker.Worker)
+    worker.key, worker.uid = "A1", "account"
+    worker.config, worker.paths = None, None
+    worker.session = SimpleNamespace(unb="account")
+    worker.client = SimpleNamespace(reader=SimpleNamespace(done=lambda: disconnected), request=request)
+    worker.emit = emit
+    monkeypatch.setattr(account_worker, "prepare_image", prepare)
+    monkeypatch.setattr(account_worker, "validate_uid", lambda *args: None)
+    monkeypatch.setattr(account_worker.guard, "check", lambda: None)
+    monkeypatch.setattr(account_worker.limiter, "check", lambda _: None)
+    task = dict(task_id="image-task", account_key="A1", account_uid="other" if mode == "wrong-account" else "account",
+                expires_at=time.time() + 60, cid="chat", customer_uid="buyer", text="[图片]",
+                request_id="request", client_uuid="uuid", message_type="image", image_key="img-test")
+    await worker.send(task)
+    assert reports[-1]["state"] == expected
+    assert len(sent) == (1 if mode in {"accept", "timeout"} else 0)
+    assert len(uploads) == (0 if mode == "wrong-account" else 1)
+    if mode == "upload-fail":
+        assert reports[-1]["error"] == "闲鱼图片上传失败"

@@ -67,24 +67,33 @@ def operator_identity(raw: dict, app_id: str, allowed_open_id: str, binding=None
 
 
 def parse_operator_event(raw: dict, app_id: str, allowed_open_id: str, binding=None):
-    """仅接受指定应用、本人、私聊、文本，不使用 root_id 替代 parent_id。"""
+    """接收本人私聊的文本或单图，不使用 root_id 猜测发送目标。"""
     identity = operator_identity(raw, app_id, allowed_open_id, binding)
     if identity is None:
         return None
     message = raw["event"]["message"]
-    if message.get("message_type") != "text":
+    kind = message.get("message_type")
+    if kind not in {"text", "image"}:
         return None
     try:
         content = json.loads(message.get("content") or "{}")
         text = content.get("text") if isinstance(content, dict) else None
+        image_key = content.get("image_key") if isinstance(content, dict) else None
         created = int(message.get("create_time"))
     except (json.JSONDecodeError, TypeError, ValueError):
         return None
-    if not isinstance(text, str) or not text.strip() or created <= 0:
+    if created <= 0:
+        return None
+    if kind == "image":
+        if not isinstance(image_key, str) or not image_key.strip() or len(image_key) > 512:
+            return None
+        text = "[图片]"
+    elif not isinstance(text, str) or not text.strip():
         return None
     return {**identity,
             "parent_id": message.get("parent_id") or "", "create_time": created,
-            "text": text}
+            "text": text, "message_type": kind,
+            "image_key": image_key if kind == "image" else ""}
 
 
 def credentials(config):

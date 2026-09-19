@@ -15,6 +15,7 @@ from uuid import uuid4
 from goofish_bridge.account import account_lock, initialize_account, load_session, validate_uid
 from goofish_bridge.config import Config
 from goofish_bridge.goofish_adapter import connection, history_models, normalize_id
+from goofish_bridge.media import MediaError, prepare_image
 from goofish_bridge.messages import from_history, from_push
 from goofish_cli.core import guard, limiter
 from goofish_cli.core.errors import AuthRequiredError, RiskControlError
@@ -166,15 +167,32 @@ class Worker:
             if self.client is None or self.client.reader.done():
                 raise ConnectionError("发送前监听连接不可用")
             cid, customer = normalize_id(task["cid"]), normalize_id(task["customer_uid"])
-            if customer == self.uid or not task["text"].strip() or len(task["text"]) > 2000:
+            kind = task.get("message_type", "text")
+            if customer == self.uid or kind not in {"text", "image"}:
                 raise ValueError("发送目标或正文不合法")
+            if kind == "text" and (not task["text"].strip() or len(task["text"]) > 2000):
+                raise ValueError("发送目标或正文不合法")
+            if kind == "image" and not task.get("image_key"):
+                raise MediaError("图片资源标识缺失，请重新引用发送图片")
             guard.check()
             limiter.check("message.write")
-            encoded = base64.b64encode(json.dumps({"contentType": 1, "text": {"text": task["text"]}},
+            payload = {"contentType": 1, "text": {"text": task["text"]}}
+            content_type = 1
+            if kind == "image":
+                uploaded = await asyncio.to_thread(prepare_image, self.config, self.session, task)
+                if task["expires_at"] <= time.time():
+                    state = "EXPIRED"
+                    return
+                if self.client is None or self.client.reader.done():
+                    raise ConnectionError("图片上传后监听连接不可用，未发送")
+                guard.check()
+                content_type = 2
+                payload = {"contentType": 2, "image": {"pics": [{"type": 0, **uploaded}]}}
+            encoded = base64.b64encode(json.dumps(payload,
                                        ensure_ascii=False).encode("utf-8")).decode("ascii")
             frame = {"lwp": "/r/MessageSend/sendByReceiverScope", "headers": {"mid": task["request_id"]},
                      "body": [{"uuid": task["client_uuid"], "cid": f"{cid}@goofish", "conversationType": 1,
-                       "content": {"contentType": 101, "custom": {"type": 1, "data": encoded}},
+                       "content": {"contentType": 101, "custom": {"type": content_type, "data": encoded}},
                        "redPointPolicy": 0, "extension": {"extJson": "{}"},
                        "ctx": {"appVersion": "1.0", "platform": "web"}, "mtags": {}, "msgReadStatusSetting": 1},
                        {"actualReceivers": [f"{customer}@goofish", f"{self.uid}@goofish"]}]}
@@ -189,7 +207,7 @@ class Worker:
                                           "error": f"发送接口代码 {code}"})
         except (Exception, asyncio.CancelledError) as exc:
             state = "UNKNOWN" if attempted else "FAILED"
-            error = type(exc).__name__
+            error = str(exc) if isinstance(exc, MediaError) else type(exc).__name__
             if isinstance(exc, RiskControlError):
                 self.manual_pause = True
                 await self.emit("state", {"state": "RISK_PAUSED", "error": error})
