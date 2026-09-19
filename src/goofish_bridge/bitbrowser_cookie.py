@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -29,7 +30,25 @@ class BitBrowserClient:
 
     def _post(self, path: str, body: dict[str, Any]) -> Any:
         try:
-            response = requests.post(self.base_url + path, json=body, timeout=self.timeout)
+            # 多账号并发启动可能触发本地 API 的 429，只对读取接口做有界退避。
+            readonly = path in {"/group/list", "/browser/list", "/browser/detail",
+                                "/browser/cookies/get", "/browser/pids"}
+            for attempt in range(5):
+                response = requests.post(self.base_url + path, json=body, timeout=self.timeout)
+                if response.status_code != 429 or not readonly or attempt == 4:
+                    break
+                delay = 2 ** attempt
+                retry_after = response.headers.get("Retry-After", "")
+                if retry_after:
+                    try:
+                        delay = max(delay, float(retry_after))
+                    except ValueError:
+                        # 非秒数的等待提示不猜测，保留错误交由操作者处理。
+                        break
+                    if not 0 <= delay <= 30:
+                        break
+                response.close()
+                time.sleep(delay)
             response.raise_for_status()
             result = response.json()
         except (requests.RequestException, ValueError) as exc:
@@ -63,9 +82,16 @@ class BitBrowserClient:
         self._post("/browser/close", {"id": profile_id})
 
     def cookies(self, profile_id: str) -> list[dict[str, Any]]:
-        # 关闭窗口时 detail 仍能读取已同步的 Cookie；窗口打开后再读取实时 Cookie。
-        detail = self._post("/browser/detail", {"id": profile_id}) or {}
-        data = detail.get("cookie", "") if isinstance(detail, dict) else ""
+        # 已打开窗口优先读取实时凭据，避免同步快照覆盖浏览器中的新令牌。
+        data = self._post("/browser/cookies/get", {"browserId": profile_id})
+        if not data:
+            pids = self._post("/browser/pids", {"ids": [profile_id]}) or {}
+            if not isinstance(pids, dict):
+                raise BitBrowserError("比特浏览器窗口状态返回格式不正确")
+            if pids.get(profile_id):
+                raise BitBrowserError("已打开的比特窗口尚未取得 Cookie，请等待闲鱼页面加载后重试")
+            detail = self._post("/browser/detail", {"id": profile_id}) or {}
+            data = detail.get("cookie", "") if isinstance(detail, dict) else ""
         if not data:
             self.open_headless(profile_id)
             try:

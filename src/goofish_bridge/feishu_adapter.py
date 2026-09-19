@@ -253,10 +253,20 @@ class FeishuRuntime:
             CreateMessageRequestBody,
             PatchMessageRequest,
             PatchMessageRequestBody,
+            ReplyMessageRequest,
+            ReplyMessageRequestBody,
         )
 
         try:
-            if delivery["kind"] in {"CUSTOMER_CARD", "CUSTOMER_CARD_UPDATE"}:
+            if delivery["kind"] == "CUSTOMER_REMINDER":
+                if not delivery.get("target_message_id"):
+                    return "FAILED", None, "缺少原客户卡片，未发送引用提醒"
+                request = ReplyMessageRequest.builder().message_id(delivery["target_message_id"]).request_body(
+                    ReplyMessageRequestBody.builder().msg_type("text")
+                    .content(json.dumps({"text": delivery["text"]}, ensure_ascii=False))
+                    .reply_in_thread(False).uuid(delivery["delivery_id"]).build()).build()
+                response = self.api.im.v1.message.reply(request)
+            elif delivery["kind"] in {"CUSTOMER_CARD", "CUSTOMER_CARD_UPDATE"}:
                 card = build_customer_card(json.loads(delivery["text"]))
                 content = json.dumps(card, ensure_ascii=False)
                 if delivery.get("target_message_id"):

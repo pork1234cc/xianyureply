@@ -112,3 +112,40 @@ def test_customer_card_default_view_uses_latest_four_entries():
     assert "消息1" not in content
     assert "消息2" not in content
     assert all(f"消息{i}" in content for i in range(3, 7))
+
+
+@pytest.mark.parametrize("outcome,expected", [
+    ("success", "SERVER_ACCEPTED"), ("missing_id", "UNKNOWN"),
+    ("rejected", "FAILED"), ("timeout", "UNKNOWN"),
+])
+def test_customer_reminder_uses_quote_api_and_never_patches_card(outcome, expected):
+    from goofish_bridge.feishu_adapter import FeishuRuntime
+
+    calls = []
+
+    def reply(request):
+        calls.append(request)
+        if outcome == "timeout":
+            raise TimeoutError("模拟网络结果未知")
+        return SimpleNamespace(success=lambda: outcome != "rejected", code=230011,
+                               msg="测试拒绝", data=SimpleNamespace(
+                                   message_id=None if outcome == "missing_id" else "new-reminder"))
+
+    def unexpected(_):
+        pytest.fail("提醒不得更新原卡片或降级为重复建卡")
+
+    runtime = FeishuRuntime.__new__(FeishuRuntime)
+    runtime.binding = {"chat_id": "owner-chat"}
+    runtime.api = SimpleNamespace(im=SimpleNamespace(v1=SimpleNamespace(
+        message=SimpleNamespace(reply=reply, create=unexpected, patch=unexpected))))
+    text = "闲鱼账号：北美草原狼\n客户昵称：张先生\n新消息：还有货吗？"
+    state, message_id, _ = runtime.send({"kind": "CUSTOMER_REMINDER", "delivery_id": "stable-uuid",
+                                       "target_message_id": "original-card", "text": text})
+    assert state == expected
+    assert message_id == ("new-reminder" if outcome == "success" else None)
+    assert len(calls) == 1
+    assert calls[0].message_id == "original-card"
+    assert calls[0].request_body.msg_type == "text"
+    assert json.loads(calls[0].request_body.content) == {"text": text}
+    assert calls[0].request_body.uuid == "stable-uuid"
+    assert calls[0].request_body.reply_in_thread is False

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import time
+
 import pytest
+import requests
 
 from goofish_bridge.bitbrowser_cookie import BitBrowserClient, BitBrowserError
 
@@ -46,7 +49,7 @@ def test_cookie_uid_mismatch_is_rejected(monkeypatch):
     monkeypatch.setattr(client, "_post", lambda path, body: {
         "cookie": '[{"name":"unb","value":"OTHER"},{"name":"_m_h5_tk","value":"T"},'
                   '{"name":"cookie2","value":"C"}]',
-    })
+    } if path == "/browser/detail" else None)
     with pytest.raises(BitBrowserError, match="UID"):
         client.cookies_for_account("闲鱼", "A1", "EXPECTED")
 
@@ -62,6 +65,22 @@ def test_headless_open_ignores_default_urls(monkeypatch):
     })]
 
 
+def test_live_cookies_take_priority_without_opening_or_closing_window(monkeypatch):
+    client = BitBrowserClient("http://bitbrowser")
+    calls = []
+
+    def fake_post(path, body):
+        calls.append(path)
+        if path == "/browser/cookies/get":
+            assert body == {"browserId": "profile-1"}
+            return [{"name": "unb", "value": "LIVE"}]
+        return {"cookie": '[{"name":"unb","value":"STALE"}]'}
+
+    monkeypatch.setattr(client, "_post", fake_post)
+    assert client.cookies("profile-1")[0]["value"] == "LIVE"
+    assert calls == ["/browser/cookies/get"]
+
+
 def test_realtime_cookie_fetch_closes_temporary_window(monkeypatch):
     client = BitBrowserClient("http://bitbrowser")
     calls = []
@@ -71,11 +90,57 @@ def test_realtime_cookie_fetch_closes_temporary_window(monkeypatch):
         if path == "/browser/detail":
             return {"cookie": ""}
         if path == "/browser/cookies/get":
-            return [{"name": "unb", "value": "U"}]
+            return [{"name": "unb", "value": "U"}] if any(
+                call[0] == "/browser/open" for call in calls
+            ) else []
         return None
 
     monkeypatch.setattr(client, "_post", fake_post)
     assert client.cookies("profile-1")[0]["value"] == "U"
     assert [path for path, _ in calls] == [
+        "/browser/cookies/get", "/browser/pids",
         "/browser/detail", "/browser/open", "/browser/cookies/get", "/browser/close",
     ]
+
+
+def test_empty_live_cookies_never_close_existing_window(monkeypatch):
+    client = BitBrowserClient("http://bitbrowser")
+    calls = []
+
+    def fake_post(path, body):
+        calls.append(path)
+        return {"profile-1": 123} if path == "/browser/pids" else []
+
+    monkeypatch.setattr(client, "_post", fake_post)
+    with pytest.raises(BitBrowserError, match="尚未取得 Cookie"):
+        client.cookies("profile-1")
+    assert calls == ["/browser/cookies/get", "/browser/pids"]
+
+
+@pytest.mark.parametrize("path,statuses,expected_calls", [
+    ("/group/list", [429, 200], 2),
+    ("/browser/detail", [429] * 5, 5),
+    ("/browser/open", [429], 1),
+    ("/group/list", [403], 1),
+])
+def test_read_api_rate_limit_is_bounded_and_writes_are_not_retried(monkeypatch, path, statuses, expected_calls):
+    calls, sleeps = [], []
+
+    def fake_post(*args, **kwargs):
+        calls.append(args)
+        response = requests.Response()
+        response.status_code = statuses[len(calls) - 1]
+        response._content = b'{"success":true,"data":{"list":[]}}'
+        response._content_consumed = True
+        return response
+
+    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(time, "sleep", sleeps.append)
+    client = BitBrowserClient("http://bitbrowser")
+    if statuses[-1] == 200:
+        assert client._post(path, {}) == {"list": []}
+    else:
+        with pytest.raises(BitBrowserError):
+            client._post(path, {})
+    assert len(calls) == expected_calls
+    assert sleeps == [2 ** index for index in range(expected_calls - 1)]

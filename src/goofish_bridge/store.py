@@ -114,6 +114,16 @@ class Store:
           VALUES(?,?,?,?,?,?,?,?)""", (uuid4().hex, f"card:{card['card_key']}:{uuid4().hex}", kind,
                                       inbox_id, card.get("message_id"), card["card_key"], payload, time.time()))
 
+    def _reminder_text(self, account_name, customer_name, text):
+        return f"闲鱼账号：{account_name}\n客户昵称：{customer_name}\n新消息：{text}"
+
+    def _queue_reminder_locked(self, card_key, inbox_id, account_name, customer_name, text):
+        self.db.execute("""INSERT INTO feishu_outbox
+          (delivery_id,idempotency_key,kind,inbox_message_id,card_key,text,created_at)
+          VALUES(?,?,'CUSTOMER_REMINDER',?,?,?,?)""",
+                        (uuid4().hex, f"reminder:{inbox_id}", inbox_id, card_key,
+                         self._reminder_text(account_name, customer_name, text), time.time()))
+
     def _append_card_locked(self, card_key, speaker, text, status=""):
         row = self.db.execute("SELECT * FROM feishu_cards WHERE card_key=?", (card_key,)).fetchone()
         if not row:
@@ -123,12 +133,8 @@ class Store:
         except (TypeError, json.JSONDecodeError):
             entries = []
         entries.append({"speaker": speaker, "text": text, **({"status": status} if status else {})})
-        card = {"card_key": row["card_key"], "account_name": self.account(row["account_key"])["name"],
-                "customer_name": row["customer_name"], "entries": entries, "message_id": row["message_id"],
-                "expanded": row["expanded"]}
         self.db.execute("UPDATE feishu_cards SET transcript=?,updated_at=? WHERE card_key=?",
                         (json.dumps(entries, ensure_ascii=False), time.time(), card_key))
-        self._queue_card_locked(card)
 
     def notice(self, key, text):
         with self.db:
@@ -193,10 +199,12 @@ class Store:
                 entries.append({"speaker": "客户", "text": event["text"]})
                 self.db.execute("UPDATE feishu_cards SET customer_name=?,transcript=?,updated_at=? WHERE card_key=?",
                                 (customer_name, json.dumps(entries, ensure_ascii=False), time.time(), card_key))
-                self._queue_card_locked({"card_key": card_key, "account_name": account["name"],
-                                         "customer_name": customer_name, "entries": entries,
-                                         "message_id": message_id,
-                                         "expanded": card_row["expanded"] if card_row else 0}, inbox_id)
+                if card_row:
+                    self._queue_reminder_locked(card_key, inbox_id, account["name"], customer_name, event["text"])
+                else:
+                    self._queue_card_locked({"card_key": card_key, "account_name": account["name"],
+                                             "customer_name": customer_name, "entries": entries,
+                                             "message_id": message_id, "expanded": 0}, inbox_id)
             else:
                 self._notice(f"inbox:{inbox_id}",
                              f"{account['name']}：收到无法验证路由的消息，暂不能回复。", "ANOMALY", inbox_id)
@@ -214,8 +222,16 @@ class Store:
         if previous:
             return dict(previous)
         target = self.db.execute("""SELECT i.* FROM feishu_outbox o JOIN inbox_messages i
-           ON i.id=o.inbox_message_id WHERE o.feishu_message_id=? AND o.kind IN ('CUSTOMER','CUSTOMER_CARD')
+           ON i.id=o.inbox_message_id WHERE o.feishu_message_id=? AND o.kind IN ('CUSTOMER','CUSTOMER_CARD','CUSTOMER_REMINDER')
            AND o.state='SERVER_ACCEPTED' AND i.parse_state='OK'""", (event["parent_id"],)).fetchone()
+        if not target:
+            # 旧 schema 更新可能改为重建卡片；当前卡片映射同样是已确认的固定路由。
+            target = self.db.execute("SELECT * FROM feishu_cards WHERE message_id=?",
+                                     (event["parent_id"],)).fetchone()
+        if not target:
+            # 连续回复引用上一条本人消息时，复用已冻结路由，不依赖上一条的发送结果。
+            target = self.db.execute("SELECT * FROM reply_tasks WHERE feishu_reply_message_id=?",
+                                     (event["parent_id"],)).fetchone()
         if not target:
             self.notice(f"reject:{event['message_id']}", "无法找到直接引用的原客户消息，未发送。请引用机器人转发的原客户消息。")
             return None
@@ -272,6 +288,7 @@ class Store:
                              created, created + ttl, state, card["card_key"]))
             if state != "QUEUED":
                 self._append_card_locked(card["card_key"], "系统", text, "已过期，未发送")
+                self._receipt(task, state)
         return self.task(task)
 
     def set_card_view(self, card_message_id, expanded):
@@ -294,12 +311,18 @@ class Store:
         return dict(self.db.execute("SELECT * FROM reply_tasks WHERE task_id=?", (task,)).fetchone())
 
     def _receipt(self, task, state):
+        # 正常排队和发送成功只记本地，避免逐句回执打断详情页中的连续回复。
+        if state not in {"FAILED", "UNKNOWN", "EXPIRED"}:
+            return
         row = self.task(task)
-        labels = {"QUEUED": "排队中", "SERVER_ACCEPTED": "发送成功",
-                  "FAILED": "发送失败", "UNKNOWN": "结果待确认",
+        labels = {"FAILED": "发送失败", "UNKNOWN": "结果待确认",
                   "EXPIRED": "已过期，未发送"}
+        card = self.db.execute("SELECT customer_name FROM feishu_cards WHERE card_key=?",
+                               (row["card_key"],)).fetchone()
+        prefix = (f"闲鱼账号：{self.account(row['account_key'])['name']}\n"
+                  f"客户昵称：{card['customer_name'] if card else '客户'}\n")
         self._notice(f"receipt:{task}:{state}",
-                     f"回复：{row['text']}\n状态：{labels[state]}",
+                     f"{prefix}回复：{row['text']}\n状态：{labels[state]}",
                      "RECEIPT", reply=task)
 
     def recover(self):
@@ -308,31 +331,33 @@ class Store:
                 self.db.execute("UPDATE reply_tasks SET state='UNKNOWN' WHERE task_id=?", (row[0],))
                 self._receipt(row[0], "UNKNOWN")
             self.db.execute("UPDATE feishu_outbox SET state='UNKNOWN' WHERE state='DISPATCHING'")
+            # 保留旧回执记录，但升级后不再投递尚未发出的正常状态通知。
+            self.db.execute("""UPDATE feishu_outbox SET state='SUPPRESSED',error='正常回复状态已改为静默'
+              WHERE state='QUEUED' AND kind='RECEIPT'
+                AND (idempotency_key LIKE 'receipt:%:SERVER_ACCEPTED'
+                     OR idempotency_key LIKE 'receipt:%:QUEUED')""")
             # 历史同步告警只保存在本地日志，不再向飞书展示；清理旧版本遗留的待发送提示。
             self.db.execute("""UPDATE feishu_outbox SET state='FAILED', error='历史同步提示已按展示策略抑制'
                WHERE state='QUEUED' AND kind='NOTICE'
                  AND (text LIKE '%历史%' OR text LIKE '%补拉%' OR text LIKE '%会话%')""")
-            # 卡片创建或更新失败时保留会话，重启后只重放尚未成功展示的最新内容。
-            for row in self.db.execute("SELECT * FROM feishu_cards").fetchall():
+            # 重启不刷新现有卡片，防止客户端未提交草稿被覆盖。
+            self.db.execute("""UPDATE feishu_outbox SET state='FAILED',error='重启后请主动刷新卡片'
+              WHERE kind='CUSTOMER_CARD_UPDATE' AND inbox_message_id IS NULL AND state='QUEUED'""")
+            # 只恢复明确失败的首次建卡；未知投递不重发，避免重复建卡。
+            for row in self.db.execute("SELECT * FROM feishu_cards WHERE message_id IS NULL").fetchall():
                 pending = self.db.execute("""SELECT 1 FROM feishu_outbox
                   WHERE card_key=? AND kind IN ('CUSTOMER_CARD','CUSTOMER_CARD_UPDATE')
-                    AND state IN ('QUEUED','DISPATCHING') LIMIT 1""", (row["card_key"],)).fetchone()
-                latest_success = self.db.execute("""SELECT MAX(created_at) FROM feishu_outbox
-                  WHERE card_key=? AND kind IN ('CUSTOMER_CARD','CUSTOMER_CARD_UPDATE')
-                    AND state='SERVER_ACCEPTED'""", (row["card_key"],)).fetchone()[0]
-                latest_payload = self.db.execute("""SELECT text FROM feishu_outbox
-                  WHERE card_key=? AND kind IN ('CUSTOMER_CARD','CUSTOMER_CARD_UPDATE')
-                    AND state='SERVER_ACCEPTED' ORDER BY created_at DESC LIMIT 1""",
-                                                (row["card_key"],)).fetchone()
-                view_needs_update = latest_payload and '"expanded"' not in latest_payload[0]
-                needs_replay = (row["message_id"] is None or latest_success is None
-                                or row["updated_at"] > latest_success or view_needs_update)
-                if not pending and needs_replay:
+                    AND state IN ('QUEUED','DISPATCHING','UNKNOWN','SERVER_ACCEPTED') LIMIT 1""", (row["card_key"],)).fetchone()
+                failed = self.db.execute("""SELECT inbox_message_id FROM feishu_outbox
+                  WHERE card_key=? AND kind='CUSTOMER_CARD' AND state='FAILED'
+                  ORDER BY created_at,rowid LIMIT 1""", (row["card_key"],)).fetchone()
+                if not pending and failed:
                     self._queue_card_locked({"card_key": row["card_key"],
                                              "account_name": self.account(row["account_key"])["name"],
                                              "customer_name": row["customer_name"],
                                              "entries": json.loads(row["transcript"]),
-                                             "message_id": row["message_id"], "expanded": row["expanded"]})
+                                             "message_id": row["message_id"], "expanded": row["expanded"]},
+                                            failed["inbox_message_id"])
             self.db.execute("UPDATE accounts SET state='STOPPED'")
 
     def expire(self, now=None):
@@ -351,7 +376,7 @@ class Store:
         if busy:
             return None
         row = self.db.execute("""SELECT * FROM reply_tasks WHERE account_key=? AND account_uid=?
-           AND state='QUEUED' AND expires_at>? ORDER BY created_at,task_id LIMIT 1""",
+           AND state='QUEUED' AND expires_at>? ORDER BY created_at,rowid LIMIT 1""",
                               (key, account["expected_uid"], now)).fetchone()
         if not row:
             return None
@@ -374,18 +399,32 @@ class Store:
                     labels = {"SERVER_ACCEPTED": "发送成功", "FAILED": "发送失败",
                               "UNKNOWN": "结果待确认", "EXPIRED": "已过期，未发送"}
                     self._append_card_locked(before["card_key"], "我方", before["text"], labels[state])
-                else:
-                    self._receipt(task, state)
+                self._receipt(task, state)
                 logging.getLogger("goofish_bridge").info("回复任务终态：%s", state)
 
     def claim_outbox(self):
-        row = self.db.execute("SELECT * FROM feishu_outbox WHERE state='QUEUED' "
-                              "ORDER BY created_at, rowid LIMIT 1").fetchone()
+        row = self.db.execute("""SELECT o.* FROM feishu_outbox o
+          LEFT JOIN feishu_cards c ON c.card_key=o.card_key
+          WHERE o.state='QUEUED' AND (o.kind!='CUSTOMER_REMINDER' OR c.message_id IS NOT NULL)
+          ORDER BY o.created_at,o.rowid LIMIT 1""").fetchone()
         if not row:
             return None
+        delivery = dict(row)
         with self.db:
+            card = self.db.execute("SELECT * FROM feishu_cards WHERE card_key=?",
+                                   (row["card_key"],)).fetchone()
+            # 兼容升级前排队的入站卡片更新及重复建卡，投递时固定引用当前原卡片。
+            if card and card["message_id"] and row["inbox_message_id"] and row["kind"] in {
+                    "CUSTOMER_CARD", "CUSTOMER_CARD_UPDATE", "CUSTOMER_REMINDER"}:
+                inbox = self.db.execute("SELECT * FROM inbox_messages WHERE id=?",
+                                        (row["inbox_message_id"],)).fetchone()
+                delivery.update(kind="CUSTOMER_REMINDER", target_message_id=card["message_id"],
+                                text=self._reminder_text(self.account(inbox["account_key"])["name"],
+                                                         inbox["customer_name"], inbox["text"]))
+                self.db.execute("UPDATE feishu_outbox SET kind=?,target_message_id=?,text=? WHERE delivery_id=?",
+                                (delivery["kind"], delivery["target_message_id"], delivery["text"], row["delivery_id"]))
             self.db.execute("UPDATE feishu_outbox SET state='DISPATCHING' WHERE delivery_id=?", (row["delivery_id"],))
-        return dict(row)
+        return delivery
 
     def finish_outbox(self, delivery, state, message_id=None, error=""):
         if state not in {"SERVER_ACCEPTED", "UNKNOWN", "FAILED"}:
@@ -393,7 +432,8 @@ class Store:
         with self.db:
             row = self.db.execute("SELECT * FROM feishu_outbox WHERE delivery_id=? AND state='DISPATCHING'",
                                   (delivery,)).fetchone()
-            if state == "SERVER_ACCEPTED" and not message_id and not (row and row["target_message_id"]):
+            if state == "SERVER_ACCEPTED" and not message_id and not (
+                    row and row["kind"] == "CUSTOMER_CARD_UPDATE" and row["target_message_id"]):
                 raise ValueError("飞书接受回包必须包含 message_id")
             stored_message_id = None if row and row["kind"] == "CUSTOMER_CARD_UPDATE" else (
                 message_id or (row["target_message_id"] if row and row["kind"] == "CUSTOMER_CARD" else None))
