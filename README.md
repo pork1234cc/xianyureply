@@ -1,3 +1,7 @@
+> 本仓库已新增闲鱼 × 飞书消息桥 MVP 开发实现。请先阅读
+> [消息桥启动说明](docs/bridge-quickstart.md) 和 [开发及验收记录](docs/bridge-development.md)。
+> 真实联调与未完成的验收项见开发记录；下文保留上游 CLI 说明。
+
 <div align="center">
 
 # goofish-cli

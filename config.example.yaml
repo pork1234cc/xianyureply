@@ -1,0 +1,42 @@
+# 阶段 0 配置；真实身份只保存在本地 config.yaml / accounts 中。
+app:
+  name: goofish-feishu-bridge
+  database: ./data/bridge.sqlite
+  log_dir: ./logs
+  display_timezone: Asia/Shanghai
+feishu:
+  app_id_env: FEISHU_APP_ID
+  app_secret_env: FEISHU_APP_SECRET
+  allowed_open_id_env: OPEN_ID
+  network:
+    mode: direct
+    proxy_url_env: null
+bridge:
+  reply_mode: direct_parent_only
+  write_rpm_per_account: 1
+  reply_ttl_seconds: 600
+  auto_retry_unknown_send: false
+recovery:
+  history_max_pages_per_chat: 5
+  history_page_size: 20
+  catchup_timeout_seconds_per_account: 60
+bitbrowser:
+  enabled: false
+  api_url: http://127.0.0.1:54345
+  group_name: 闲鱼
+accounts:
+  - key: A1
+    name: 北美草原狼
+    expected_uid: ""
+    data_dir: ./accounts/A1
+    network: {mode: direct, proxy_url_env: null}
+  - key: A2
+    name: AI编程哥
+    expected_uid: ""
+    data_dir: ./accounts/A2
+    network: {mode: direct, proxy_url_env: null}
+  - key: A3
+    name: 影刀RPA专家
+    expected_uid: ""
+    data_dir: ./accounts/A3
+    network: {mode: direct, proxy_url_env: null}

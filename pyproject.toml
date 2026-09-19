@@ -35,6 +35,9 @@ dependencies = [
   "browser-cookie3>=0.20",
   "playwright>=1.58.0",
   "cryptography>=41.0",
+  "lark-oapi==1.6.8",
+  "python-dotenv==1.2.2",
+  "tzdata>=2025.2",
 ]
 
 [project.optional-dependencies]
@@ -64,7 +67,7 @@ Issues = "https://github.com/fancyboi999/goofish-cli/issues"
 Changelog = "https://github.com/fancyboi999/goofish-cli/blob/main/CHANGELOG.md"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/goofish_cli"]
+packages = ["src/goofish_cli", "src/goofish_bridge"]
 
 # 内置 Claude Skills：把项目根 `skills/` 收进 wheel 的 `goofish_cli/_bundled_skills/`，
 # 让 `goofish skills install` 能按包内路径定位到它（当前实现用 `goofish_cli.__file__`

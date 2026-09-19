@@ -51,3 +51,8 @@ Thumbs.db
 
 # npm / ClawHub package artifacts
 *.tgz
+
+# 消息桥私有运行数据（含备份凭据和协议验证记录）
+/accounts/
+/data/
+/config.yaml

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -33,7 +34,7 @@ def test_load_uses_existing_cookies_json(fake_cookies_path, monkeypatch):
         {"name": "unb", "value": "U1"},
         {"name": "_m_h5_tk", "value": "T_xxx_1"},
         {"name": "tracknick", "value": "nick1"},
-    ]))
+    ], ensure_ascii=False), encoding="utf-8")
 
     # bootstrap 被调用就失败
     def fail(*_args, **_kwargs):
@@ -65,8 +66,9 @@ def test_load_bootstraps_when_missing(fake_cookies_path, monkeypatch):
     # v2 持久化为 list[Record]；legacy flat 走 _coerce_records → domain=''
     assert {r["name"]: r["value"] for r in data} == fake
     assert all(r["domain"] == "" for r in data)
-    # 文件权限 0o600
-    assert (fake_cookies_path.stat().st_mode & 0o777) == 0o600
+    # Windows 权限由 ACL 控制，st_mode 不表达 Unix 的 0600；不将其当作 ACL 验证。
+    if os.name != "nt":
+        assert (fake_cookies_path.stat().st_mode & 0o777) == 0o600
 
     # 第二次 load 应命中缓存，不再调 bootstrap
     s2 = session_mod.Session.load()
@@ -142,7 +144,8 @@ def test_write_cookies_json_format(tmp_path):
     # 解密后内容正确（v2 持久化为 list[Record]，flat dict 经 _coerce_records 转 records）
     data = decrypt_cookies(raw)
     assert {r["name"]: r["value"] for r in data} == {"a": "1", "b": "2"}
-    assert (target.stat().st_mode & 0o777) == 0o600
+    if os.name != "nt":
+        assert (target.stat().st_mode & 0o777) == 0o600
 
 
 def test_cookie_records_preserves_domain_from_bootstrap(tmp_path, monkeypatch):
@@ -200,9 +203,9 @@ def test_plaintext_migration_to_encrypted(fake_cookies_path, monkeypatch):
     fake_cookies_path.write_text(json.dumps([
         {"name": "unb", "value": "U1"},
         {"name": "_m_h5_tk", "value": "T_xxx_1"},
-    ]))
+    ], ensure_ascii=False), encoding="utf-8")
     # 确认当前是明文
-    assert fake_cookies_path.read_text().startswith("[")
+    assert fake_cookies_path.read_text(encoding="utf-8").startswith("[")
 
     monkeypatch.setattr(session_mod, "_bootstrap_from_browser", lambda: (_ for _ in ()).throw(AssertionError("不该触发")))
 
