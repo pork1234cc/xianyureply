@@ -72,14 +72,56 @@ class BitBrowserClient:
                 result.append(BitBrowserProfile(profile_id, item.get("name", ""), group_name))
         return result
 
-    def open_headless(self, profile_id: str) -> None:
+    def open_headless(self, profile_id: str) -> Any:
         """以无头模式打开窗口，使实时 Cookie 接口可用。"""
-        self._post("/browser/open", {"id": profile_id, "args": ["--headless"],
+        return self._post("/browser/open", {"id": profile_id, "args": ["--headless"],
                                       "queue": True, "ignoreDefaultUrls": True})
 
     def close(self, profile_id: str) -> None:
         """关闭本模块临时打开的窗口。"""
         self._post("/browser/close", {"id": profile_id})
+        for _ in range(10):
+            pids = self._post("/browser/pids", {"ids": [profile_id]}) or {}
+            if isinstance(pids, dict) and not pids.get(profile_id):
+                return
+            time.sleep(0.5)
+        raise BitBrowserError("临时无头窗口未确认关闭，请检查比特浏览器")
+
+    @staticmethod
+    def _fresh(records: list[dict[str, Any]]) -> bool:
+        """检查关键字段和 H5 令牌毫秒到期时间，预留一分钟启动余量。"""
+        flat = {item.get("name"): item.get("value") for item in records}
+        if not all(flat.get(name) for name in ("unb", "cookie2", "_m_h5_tk")):
+            return False
+        try:
+            expires = int(flat["_m_h5_tk"].rsplit("_", 1)[1]) / 1000
+        except (ValueError, IndexError, AttributeError, TypeError):
+            return False
+        return expires > time.time() + 60
+
+    def _load_headless_page(self, opened: Any) -> list[dict[str, Any]]:
+        """加载闲鱼页面，让浏览器刷新登录凭据，最多等待一分钟。"""
+        from playwright.sync_api import Error, sync_playwright
+
+        endpoint = opened.get("ws") or opened.get("http") if isinstance(opened, dict) else None
+        if not endpoint:
+            raise BitBrowserError("无头窗口未返回调试地址")
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.connect_over_cdp(endpoint, timeout=15000)
+                if not browser.contexts:
+                    raise BitBrowserError("无头窗口缺少原账号浏览器上下文")
+                context = browser.contexts[0]
+                page = context.new_page()
+                page.goto("https://www.goofish.com/", wait_until="domcontentloaded", timeout=30000)
+                for _ in range(30):
+                    records = context.cookies(["https://www.goofish.com"])
+                    if self._fresh(records):
+                        return records
+                    page.wait_for_timeout(1000)
+        except Error as exc:
+            raise BitBrowserError("无头窗口加载闲鱼失败") from exc
+        raise BitBrowserError("无头刷新后 Cookie 仍过期或未登录，请在原窗口完成登录验证")
 
     def cookies(self, profile_id: str) -> list[dict[str, Any]]:
         # 已打开窗口优先读取实时凭据，避免同步快照覆盖浏览器中的新令牌。
@@ -92,12 +134,19 @@ class BitBrowserClient:
                 raise BitBrowserError("已打开的比特窗口尚未取得 Cookie，请等待闲鱼页面加载后重试")
             detail = self._post("/browser/detail", {"id": profile_id}) or {}
             data = detail.get("cookie", "") if isinstance(detail, dict) else ""
-        if not data:
-            self.open_headless(profile_id)
+            snapshot = self._parse_cookies(data or [])
+            if self._fresh(snapshot):
+                return snapshot
             try:
-                data = self._post("/browser/cookies/get", {"browserId": profile_id})
+                opened = self.open_headless(profile_id)
+                return self._parse_cookies(self._load_headless_page(opened))
             finally:
+                # 打开请求即使超时也可能已创建窗口，因此也必须进入清理。
                 self.close(profile_id)
+        return self._parse_cookies(data)
+
+    @staticmethod
+    def _parse_cookies(data: Any) -> list[dict[str, Any]]:
         if isinstance(data, str):
             try:
                 data = json.loads(data)

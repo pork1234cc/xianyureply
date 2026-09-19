@@ -13,7 +13,7 @@ feishu:
     proxy_url_env: null
 bridge:
   reply_mode: direct_parent_only
-  write_rpm_per_account: 1
+  write_rpm_per_account: 12
   reply_ttl_seconds: 600
   auto_retry_unknown_send: false
 recovery:

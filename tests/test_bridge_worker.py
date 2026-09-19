@@ -4,11 +4,41 @@ import asyncio
 import base64
 import json
 import time
+from contextlib import nullcontext
 from types import SimpleNamespace
 
 import pytest
 
 from goofish_bridge import account_worker
+
+
+def test_worker_applies_configured_rate_limit(monkeypatch, tmp_path):
+    config = SimpleNamespace(raw={"bridge": {"write_rpm_per_account": 12}, "app": {}})
+    initialized = []
+
+    def initialize(config, key):
+        # 保留真实初始化的关键副作用，包括 Worker 构造时的第二次覆盖。
+        initialized.append(key)
+        monkeypatch.setenv("GOOFISH_WRITE_RPM", "1")
+
+    monkeypatch.setenv("GOOFISH_WRITE_RPM", "1")
+    monkeypatch.setattr(account_worker.Config, "load", lambda _: config)
+    monkeypatch.setattr(account_worker, "initialize_account", initialize)
+    monkeypatch.setattr(account_worker, "load_session", lambda *_: SimpleNamespace(unb="account"))
+    monkeypatch.setattr(account_worker, "account_lock", lambda _: nullcontext())
+    monkeypatch.setattr(account_worker.limiter, "STATE_PATH", tmp_path / "limiter.json")
+    ticks = iter([100 + 5 * i for i in range(13)])
+    monkeypatch.setattr(account_worker.limiter.time, "time", lambda: next(ticks))
+
+    async def run(self):
+        assert initialized == ["A1", "A1"]
+        assert account_worker.limiter._rpm() == 12
+        for _ in range(13):
+            account_worker.limiter.check("message.write")
+
+    monkeypatch.setattr(account_worker.Worker, "run", run)
+    account_worker.worker_main("config.yaml", "A1", None, None, None,
+                               {"positions": [], "monitor_start": 0})
 
 
 @pytest.mark.asyncio

@@ -185,10 +185,10 @@ def test_same_account_serialized_and_rate_limited(store):
     store.receive_reply(reply("r2"), now=300)
     store.state("A1", "ONLINE")
     first = store.claim_reply("A1", "mid1", "uuid1", now=300)
-    assert store.claim_reply("A1", "mid2", "uuid2", now=361) is None
+    assert store.claim_reply("A1", "mid2", "uuid2", now=305) is None
     store.finish_reply(first["task_id"], "SERVER_ACCEPTED", "server-msg")
-    assert store.claim_reply("A1", "mid2", "uuid2", now=350) is None
-    assert store.claim_reply("A1", "mid2", "uuid2", now=361)
+    assert store.claim_reply("A1", "mid2", "uuid2", now=304.999) is None
+    assert store.claim_reply("A1", "mid2", "uuid2", now=305)
 
 
 def test_invalid_reference_does_not_create_task(store):

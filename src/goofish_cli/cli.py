@@ -14,7 +14,7 @@ from goofish_cli.core.registry import Command, discover
 
 app = typer.Typer(
     name="goofish",
-    help="闲鱼 CLI — 支持 MCP，未来支持 Skills。为 AI Agent 提供闲鱼自动化基础能力。",
+    help="闲鱼登录与消息诊断工具；多账号回复请使用 python -m goofish_bridge。",
     no_args_is_help=True,
     add_completion=False,
 )

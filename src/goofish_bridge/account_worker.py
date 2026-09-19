@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import os
 import queue
 import random
 import time
@@ -271,4 +272,6 @@ def worker_main(config_path, key, commands, events, stop, initial):
     paths = initialize_account(config, key)
     with account_lock(paths):
         worker = Worker(config, key, commands, events, stop, initial)
+        # Worker 构造也会初始化账号并重置限流，必须在全部初始化后应用桥接额度。
+        os.environ["GOOFISH_WRITE_RPM"] = str(config.raw["bridge"]["write_rpm_per_account"])
         asyncio.run(worker.run())

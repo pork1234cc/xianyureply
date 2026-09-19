@@ -7,19 +7,17 @@ def test_discover_all_commands():
 
     discover()
     names = [c.full_name for c in iter_commands()]
-    # 至少有这些命令
+    # 仅保留登录与消息诊断命令
     expected = {
         "auth.login",
         "auth.status",
         "auth.reset-guard",
-        "item.get",
-        "item.delete",
-        "item.publish",
-        "media.upload",
-        "category.recommend",
-        "location.default",
+        "message.list-chats",
+        "message.history",
+        "message.watch",
+        "message.send",
     }
-    assert expected.issubset(set(names)), f"缺失命令: {expected - set(names)}"
+    assert set(names) == expected
 
 
 def test_write_commands_marked():
@@ -27,7 +25,6 @@ def test_write_commands_marked():
 
     discover()
     r = registry()
-    assert r["item.delete"].write is True
-    assert r["item.publish"].write is True
-    assert r["media.upload"].write is True
-    assert r["item.get"].write is False
+    assert r["message.send"].write is True
+    assert r["message.history"].write is False
+    assert r["message.list-chats"].write is False

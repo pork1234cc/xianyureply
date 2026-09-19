@@ -14,7 +14,7 @@ from goofish_bridge.account import AccountPaths, account_lock, bound_uid, valida
 from goofish_bridge.account_worker import worker_main
 from goofish_bridge.feishu_adapter import FeishuRuntime
 from goofish_bridge.router import route_card_operator, route_operator
-from goofish_bridge.store import Store
+from goofish_bridge.store import REPLY_INTERVAL_SECONDS, Store
 from goofish_cli.core.sign import generate_mid, generate_uuid
 
 
@@ -55,8 +55,8 @@ def run(config, config_path: Path, keys, stop_file="data/stop.request", test_cus
     bridge = config.raw["bridge"]
     if (bridge.get("auto_retry_unknown_send") is not False
             or bridge.get("reply_mode") != "direct_parent_only"
-            or bridge.get("write_rpm_per_account") != 1):
-        raise ValueError("首版要求只接受直接引用、每账号每分钟 1 次、未知不重发")
+            or bridge.get("write_rpm_per_account") != 60 // REPLY_INTERVAL_SECONDS):
+        raise ValueError("要求只接受直接引用、每账号每 5 秒 1 次（每分钟 12 次）、未知不重发")
     # 单实例锁复用文件锁机制；锁文件位于已受 ACL 保护的账号父目录内。
     lock_paths = AccountPaths(config.root, "A1")
     lock_paths.directory.mkdir(parents=True, exist_ok=True)
@@ -158,7 +158,7 @@ def _run_locked(config, config_path, keys, stop_file, test_customer, duration):
                 candidate = store.db.execute("""SELECT 1 FROM reply_tasks WHERE account_key=?
                   AND state='QUEUED' AND expires_at>? LIMIT 1""", (key, time.time())).fetchone()
                 account = store.account(key)
-                if candidate and account["state"] == "ONLINE" and time.time() - account["last_send"] >= 60:
+                if candidate and account["state"] == "ONLINE" and time.time() - account["last_send"] >= REPLY_INTERVAL_SECONDS:
                     task = store.claim_reply(key, generate_mid(), generate_uuid())
                     if task:
                         if test_customer and task["customer_uid"] != test_customer:

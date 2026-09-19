@@ -9,6 +9,8 @@ import time
 from pathlib import Path
 from uuid import uuid4
 
+REPLY_INTERVAL_SECONDS = 5
+
 
 class Store:
     def __init__(self, path: Path):
@@ -370,7 +372,7 @@ class Store:
     def claim_reply(self, key, request_id, client_uuid, now=None):
         now = time.time() if now is None else now
         account = self.account(key)
-        if account["state"] != "ONLINE" or now - account["last_send"] < 60:
+        if account["state"] != "ONLINE" or now - account["last_send"] < REPLY_INTERVAL_SECONDS:
             return None
         busy = self.db.execute("SELECT 1 FROM reply_tasks WHERE account_key=? AND state='DISPATCHING'", (key,)).fetchone()
         if busy:

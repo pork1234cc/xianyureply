@@ -1,89 +1,28 @@
-# Architecture
+# 回复助手架构
 
-> 一句话：**Single Registry → CLI / MCP / Skill 三态共享**。加一个新命令只需在 `commands/` 下添一个文件，三种形态自动获得。
+## 运行链路
 
-参照 [opencli](https://github.com/jackwener/opencli) 的 single registry 思路实现。
+`goofish_bridge.__main__` → `supervisor` → 每账号独立 `account_worker`。
 
-## 分层
+闲鱼入站由 `goofish_adapter` 与 `messages` 解析，经主进程落库后，通过 `feishu_adapter` 转发。本人飞书卡片或引用回复经 `router` 精确定位账号、客户、会话，由 `store` 持久化并排队，再由对应账号进程发送。
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│  形态层（Surface）                                           │
-│  ├─ cli.py          Typer → registry 生成子命令树           │
-│  ├─ mcp_server.py   FastMCP → registry 注册 @mcp.tool()     │
-│  └─ skills/*        SKILL.md（v0.2 规划）                    │
-└─────────────────────────────────────────────────────────────┘
-                             ▲
-                             │ iter_commands()
-┌─────────────────────────────────────────────────────────────┐
-│  Registry 层                                                 │
-│  core/registry.py   @command(...) 注册中心（单例）          │
-└─────────────────────────────────────────────────────────────┘
-                             ▲
-                             │ discover()
-┌─────────────────────────────────────────────────────────────┐
-│  命令层（Business）                                          │
-│  commands/<ns>/<action>.py                                  │
-│    auth/    login, status, reset-guard                      │
-│    item/    get, publish, delete                            │
-│    media/   upload                                          │
-│    category/recommend                                       │
-│    location/default                                         │
-└─────────────────────────────────────────────────────────────┘
-                             ▲
-                             │ call / acquire / watch
-┌─────────────────────────────────────────────────────────────┐
-│  Core 层（Infra）                                            │
-│  core/sign.py       pyexecjs → goofish_js_version_2.js      │
-│  core/session.py    cookie 加载 + requests.Session          │
-│  core/mtop.py       统一 mtop 调用 + 错误分类               │
-│  core/limiter.py    令牌桶限流（1 写/分钟，可配）          │
-│  core/guard.py      风控熔断（RGV587 → trip）              │
-│  core/output.py     统一渲染 json/yaml/table/md/csv         │
-│  core/errors.py     异常体系 + exit_code                    │
-└─────────────────────────────────────────────────────────────┘
-```
+## 保留模块
 
-## 关键设计：`@command` 装饰器
+- `account`、`config`、`network`、`bitbrowser_cookie`：账号隔离、身份校验、直连、凭据获取和刷新。
+- `goofish_cli/core` 与 `static/goofish_js_version_2.js`：会话、签名、Token、协议、限流、风控和异常。
+- `messages`、`router`、`store`：消息归一化、固定路由、会话记录、去重、任务生命周期和恢复。
+- `account_worker`、`supervisor`、`feishu_adapter`：同连接收发、进程管理、飞书事件和投递。
+- `probe_store`、探针命令、测试与启动脚本：协议排障、回归验证和运行支持。
+- `goofish_cli/commands/auth`、`commands/message`：独立诊断入口，使用 registry 自动发现。
 
-每个命令文件长这样：
+账号、客户及会话由确定性代码和持久化映射选择。发送结果未知时不自动重发。正式业务数据库及其 WAL 不属于可清理缓存。
 
-```python
-from goofish_cli.core import Session, Strategy, command
-from goofish_cli.core.mtop import call
+## 后续 AI 接入边界（尚未实现）
 
-@command(
-    namespace="item",
-    name="get",
-    description="查询闲鱼商品详情（只读）",
-    strategy=Strategy.COOKIE,
-    columns=["item_id", "title", "price", "seller_nick", "status"],
-)
-def get(item_id: str) -> dict:
-    session = Session.load()
-    raw = call(session, api="mtop.taobao.idle.pc.detail",
-               data={"itemId": item_id}, version="1.0")
-    ...
-```
+可在入站消息持久化后生成建议正文，交由本人确认。模型只生成正文，不选择或改写账号、客户和会话目标；确认后的发送继续经过身份校验、固定路由、持久化队列和限流。
 
-- **namespace + name** → CLI 路径 `goofish item get`，MCP tool 名 `item_get`
-- **columns** → 输出契约（table/csv/md 场景的列顺序）
-- **strategy** → 认证要求（PUBLIC / COOKIE / WS）
-- **write=True** → 自动触发限流 + 风控熔断
+会话记录可作为上下文来源，但后续仍需设计商品知识、模型配置、上下文范围、人工接管、草稿状态及发送前的新消息检查。当前没有实现这些 AI 能力，不引入占位模块或额外模型依赖。
 
-## 风控护栏
+## 裁剪范围
 
-1. **令牌桶**（`core/limiter.py`）：默认 1 写/分钟，持久化在 `~/.goofish-cli/limiter.json`
-2. **熔断**（`core/guard.py`）：`watch()` 上下文内命中 `RiskControlError` → 写 `circuit.json`，默认熔断 10 分钟
-3. **响应体识别**（`core/mtop.py`）：自动扫 `RGV587_ERROR / punish / FAIL_SYS_USER_VALIDATE` 等关键字
-
-这些护栏在 **底层强制**，Agent 层无法绕过。
-
-## 实现要点
-
-- **`t` 毫秒位**：`int(time.time() * 1000)` 取真实毫秒（避免 `int(time.time()) * 1000` 把末三位抹成 000 的精度陷阱）
-- **默认地址**：`commonAddresses[0]` 兜底，参数化接口支持显式指定 `addressId`
-- **风控识别**：扫描响应体关键字（`RGV587_ERROR` / `punish` / `FAIL_SYS_USER_VALIDATE`），命中即熔断
-- **限流**：令牌桶持久化在 `~/.goofish-cli/limiter.json`
-- **形态**：CLI + MCP（+ Skill 规划），同一份 registry 输出三种形态
-- **命令组织**：每命令一个文件，`@command(...)` 装饰器自注册，参照 opencli
+移除商品管理、搜索、分类、地址、图片上传、MCP、插件、技能安装、宣传素材及上游发布工作流。保留认证、消息诊断和全部消息桥基础设施。不改动现有回复业务逻辑、运行数据及账号绑定。
