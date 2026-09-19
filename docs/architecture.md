@@ -19,7 +19,11 @@
 
 ## 账号网络与客户端声明
 
-启用 `bitbrowser.enabled` 时，按分组和账号名称唯一定位窗口，校验其 Cookie UID 与本地绑定相符，从同一窗口 `/browser/detail` 读取代理及 `browserFingerPrint.userAgent`。窗口配置是唯一来源，忽略手工 `network` / `client`，不需要维护代理环境变量。只有明确 `proxyType=noproxy` 才直连；支持自定义 HTTP、HTTPS、SOCKS5 和认证，动态提取、全局代理、SSH、缺失字段或读取失败均拒绝，不用旧地址猜测。Cookie 和运行配置在 load_session 时一次获取，避免入口与 Worker 构造重复刷新。
+启用 `bitbrowser.enabled` 后，`run` 在单实例锁内先读取指定分组的全部分页窗口，再按 Cookie `unb` UID 与配置及磁盘绑定去重，补建本地账号；账号编号支持 A1、A2…，不再限制三个。已有账号保留编号、绑定和历史路由，同 UID 多窗口只使用一个来源，同名不同 UID 独立建号。未绑定的同名预留槽位可复用，已有窗口切换 UID 时停止同步，禁止自动改绑。未登录或凭据读取失败的窗口记录警告后跳过，本地已有账号不因窗口缺失而删除。
+
+发现结果写入各账号 `accounts/A*/account.json`，配置装载时合并，子进程也读取同一份记录，不改写用户 YAML。凭据沿用原加密保存流程，重复同步不覆盖已有 Cookie；元数据先原子保存，凭据保存中断时下次同步可继续。绑定窗口 ID 后，凭据、代理和 UA 均按该 ID 在原分组内定位；未同步的旧账号仍按名称定位。`sync-accounts` 可仅同步，使用与运行相同的单实例锁；默认 `run` 启动同步后的全部已绑定账号，`--accounts` 可限制启动范围。当前在启动或显式命令时同步，不在运行中热添加进程。
+
+启用 `bitbrowser.enabled` 时，优先按分组和已绑定窗口 ID 唯一定位窗口，旧账号未绑定窗口 ID 时按名称定位，校验其 Cookie UID 与本地绑定相符，从同一窗口 `/browser/detail` 读取代理及 `browserFingerPrint.userAgent`。窗口配置是唯一来源，忽略手工 `network` / `client`，不需要维护代理环境变量。只有明确 `proxyType=noproxy` 才直连；支持自定义 HTTP、HTTPS、SOCKS5 和认证，动态提取、全局代理、SSH、缺失字段或读取失败均拒绝，不用旧地址猜测。Cookie 和运行配置在 load_session 时一次获取，避免入口与 Worker 构造重复刷新。
 
 未启用比特来源时，保留 `network.mode=direct/proxy` 和 `proxy_url_env` 手工方式。HTTP Session 和 WebSocket 连接工厂共用同一个 NetworkProfile，监听、收发、历史查询及重连不另选出口；窗口修改在重启账号进程后生效。SOCKS5 统一为 socks5h，由代理解析目标域名；代理失败不回退直连。飞书继续直连。PySocks 和 python-socks 分别服务于 HTTP 与 WebSocket；websockets 限定 15.x，锁定 15.0.1，特殊字符认证通过隔离连接子类解码，不修改第三方模块全局函数，保持 HTTPS 代理及目标 WSS 的 TLS 验证。
 

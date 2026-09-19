@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -15,8 +17,8 @@ class AccountPaths:
     key: str
 
     def __post_init__(self):
-        if self.key not in {"A1", "A2", "A3"}:
-            raise ValueError("账号编号只能是 A1、A2、A3")
+        if not isinstance(self.key, str) or not re.fullmatch(r"A[1-9][0-9]*", self.key):
+            raise ValueError("账号编号必须为 A 加正整数，例如 A1、A5")
 
     @property
     def directory(self) -> Path:
@@ -40,10 +42,23 @@ class Config:
         if not isinstance(raw, dict):
             raise ValueError("配置必须为 YAML 对象")
         accounts = raw.get("accounts")
-        if not isinstance(accounts, list) or len(accounts) != 3:
-            raise ValueError("配置必须包含 A1、A2、A3 三个账号槽位")
-        if {a.get("key") for a in accounts} != {"A1", "A2", "A3"}:
+        if not isinstance(accounts, list) or not all(isinstance(a, dict) for a in accounts):
+            raise ValueError("accounts 必须为账号列表，可为空")
+        if len({a.get("key") for a in accounts}) != len(accounts):
             raise ValueError("账号编号缺失或重复")
+        # 自动发现记录独立保存，保留用户 YAML 配置及其注释。
+        for metadata in sorted((path.parent / "accounts").glob("A*/account.json")):
+            discovered = json.loads(metadata.read_text(encoding="utf-8"))
+            if discovered.get("key") != metadata.parent.name:
+                raise ValueError("自动发现账号目录与编号不一致")
+            existing = next((a for a in accounts if a.get("key") == discovered["key"]), None)
+            if existing is None:
+                accounts.append(discovered)
+            else:
+                expected = existing.get("expected_uid", "")
+                if expected and expected != discovered.get("expected_uid"):
+                    raise ValueError("自动发现账号与配置身份不一致")
+                existing.update(discovered)
         uids = []
         for account in accounts:
             expected = account.get("expected_uid", "")
@@ -67,7 +82,7 @@ class Config:
         return next(a for a in self.raw["accounts"] if a["key"] == key)
 
     def initialize_directories(self) -> None:
-        for key in ("A1", "A2", "A3"):
-            AccountPaths(self.root, key).directory.mkdir(parents=True, exist_ok=True)
+        for account in self.raw["accounts"]:
+            AccountPaths(self.root, account["key"]).directory.mkdir(parents=True, exist_ok=True)
         for name in ("data", "logs"):
             (self.root / name).mkdir(exist_ok=True)

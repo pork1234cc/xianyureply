@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- 启动时读取比特闲鱼窗口分组，按 UID 对比本地绑定、去重并自动补建账号；支持动态账号数量、窗口 ID 固定来源及独立 `sync-accounts` 命令。
+
 ## [0.4.0] - 2026-09-07
 
 ### Added

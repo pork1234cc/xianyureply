@@ -7,6 +7,16 @@
 
 ## 启动、停止和状态
 
+启用 `bitbrowser.enabled: true` 后，启动时自动读取 `group_name`（默认“闲鱼”）的窗口账号，按闲鱼 UID 与本地去重并补建。5 个已登录且 UID 不同的窗口对应 5 个本地账号；已有 3 个时只补建缺少的 2 个。账号数量不限于 A1～A3，同 UID 重复窗口不会重复建号，同名不同 UID 会分别建号。新项目可将 `accounts` 配为 `[]`；已有配置和账号编号继续保留。
+
+只同步账号、暂不启动消息桥：
+
+```powershell
+.\.venv\Scripts\python.exe -m goofish_bridge sync-accounts
+```
+
+`run` 默认启动同步后的全部已绑定账号，`run --accounts A1 A5` 只启动指定账号。同步与运行共享单实例锁，已有服务运行时不能另行同步；新增窗口在下次启动时加入，不会运行中热添加。未登录窗口跳过并提示，已绑定窗口换号会拒绝自动改绑。发现记录保存到 `accounts/A*/account.json`，不会改写 `config.yaml`，也不会因窗口移出分组而删除本地数据。
+
 ```powershell
 # 默认启动已完成绑定的 A1、A2、A3：
 .\.venv\Scripts\python.exe -m goofish_bridge run

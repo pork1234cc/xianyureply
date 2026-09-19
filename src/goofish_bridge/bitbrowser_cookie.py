@@ -61,18 +61,33 @@ class BitBrowserClient:
             raise BitBrowserError(f"比特浏览器 API 返回失败：{path}：{result.get('msg', '')}")
         return result.get("data")
 
+    def _list_all(self, path: str, **filters) -> list[dict]:
+        result, seen = [], set()
+        for page in range(1000):
+            data = self._post(path, {"page": page, "pageSize": 100, **filters}) or {}
+            items = data.get("list") if isinstance(data, dict) else None
+            if not isinstance(items, list) or not all(isinstance(i, dict) for i in items):
+                raise BitBrowserError("比特列表格式无效")
+            for item in items:
+                identity = item.get("id")
+                if not isinstance(identity, str) or not identity or identity in seen:
+                    raise BitBrowserError("比特列表 ID 缺失或分页重复，请重试")
+                seen.add(identity)
+                result.append(item)
+            if len(items) < 100:
+                return result
+        raise BitBrowserError("比特列表超过分页上限")
+
     def profiles(self, group_name: str) -> list[BitBrowserProfile]:
-        groups = self._post("/group/list", {"page": 0, "pageSize": 100}) or {}
-        group = next((item for item in groups.get("list", [])
-                      if item.get("groupName") == group_name), None)
-        if not group:
-            raise BitBrowserError(f"找不到比特浏览器分组：{group_name}")
-        profiles = self._post("/browser/list", {"page": 0, "pageSize": 100,
-                                                  "groupId": group["id"]}) or {}
+        groups = [item for item in self._list_all("/group/list")
+                  if item.get("groupName") == group_name]
+        if len(groups) != 1:
+            raise BitBrowserError(f"比特浏览器分组不存在或重名：{group_name}")
+        profiles = self._list_all("/browser/list", groupId=groups[0]["id"])
         result = []
-        for item in profiles.get("list", []):
+        for item in profiles:
             profile_id = item.get("id")
-            if profile_id and item.get("platform", "").find("goofish.com") >= 0:
+            if profile_id and (not item.get("platform") or "goofish.com" in item["platform"]):
                 result.append(BitBrowserProfile(profile_id, item.get("name", ""), group_name))
         return result
 
@@ -176,9 +191,11 @@ class BitBrowserClient:
         self.validate_records(records, account_name, expected_uid)
         return records
 
-    def profile_for_account(self, group_name: str, account_name: str) -> BitBrowserProfile:
+    def profile_for_account(self, group_name: str, account_name: str,
+                            profile_id: str = "") -> BitBrowserProfile:
         profiles = self.profiles(group_name)
-        matches = [profile for profile in profiles if profile.name == account_name]
+        matches = [profile for profile in profiles if
+                   (profile.profile_id == profile_id if profile_id else profile.name == account_name)]
         if len(matches) != 1:
             raise BitBrowserError(f"分组 {group_name} 中账号名称匹配不唯一：{account_name}")
         return matches[0]
@@ -188,7 +205,7 @@ class BitBrowserClient:
         uid = next((item["value"] for item in records if item["name"] == "unb"), "")
         if not uid or (expected_uid and uid != expected_uid):
             raise BitBrowserError(f"比特浏览器账号 {account_name} Cookie UID 与绑定不符")
-        required = {item["name"] for item in records}
+        required = {item["name"] for item in records if item.get("value")}
         if not {"unb", "_m_h5_tk", "cookie2"} <= required:
             raise BitBrowserError(f"比特浏览器账号 {account_name} Cookie 缺少闲鱼关键字段")
 
@@ -230,9 +247,10 @@ class BitBrowserClient:
             raise BitBrowserError("比特窗口详情身份不匹配")
         return self.parse_settings(detail)
 
-    def account_context(self, group_name: str, account_name: str, expected_uid: str):
+    def account_context(self, group_name: str, account_name: str, expected_uid: str,
+                        profile_id: str = ""):
         """同一窗口提供凭据、代理与 UA；由调用方固定到账号会话。"""
-        profile = self.profile_for_account(group_name, account_name)
+        profile = self.profile_for_account(group_name, account_name, profile_id)
         records = self.cookies(profile.profile_id)
         self.validate_records(records, account_name, expected_uid)
         # 无头刷新可能更新窗口 UA，读取完成后的配置再固定到会话。

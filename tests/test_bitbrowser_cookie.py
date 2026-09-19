@@ -29,6 +29,20 @@ def test_profiles_filters_group_and_goofish(monkeypatch):
     assert client.profiles("闲鱼")[0].profile_id == "p1"
 
 
+def test_profiles_reads_all_pages_and_windows_without_platform(monkeypatch):
+    client = BitBrowserClient("http://bitbrowser")
+
+    def post(path, body):
+        if path == "/group/list":
+            return {"list": [{"id": "g", "groupName": "闲鱼"}]}
+        if body["page"] == 0:
+            return {"list": [{"id": f"p{i}", "name": str(i)} for i in range(100)]}
+        return {"list": [{"id": "last", "name": "末页"}]}
+
+    monkeypatch.setattr(client, "_post", post)
+    assert len(client.profiles("闲鱼")) == 101
+
+
 def test_cookies_for_account_reads_detail_cookie_json(monkeypatch):
     client = BitBrowserClient("http://bitbrowser")
 

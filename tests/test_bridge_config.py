@@ -24,7 +24,7 @@ def test_directories_are_separate(tmp_path):
     assert AccountPaths(tmp_path, "A1").directory.is_dir()
 
 
-@pytest.mark.parametrize("key", ["../A1", "A4", "", None])
+@pytest.mark.parametrize("key", ["../A1", "A0", "A01", "", None])
 def test_invalid_account_key(tmp_path, key):
     with pytest.raises(ValueError):
         AccountPaths(tmp_path, key)
@@ -40,6 +40,16 @@ def test_numeric_uid_rejected(tmp_path):
     path = write_config(tmp_path, lambda raw: raw["accounts"][0].update(expected_uid=123))
     with pytest.raises(ValueError):
         Config.load(path)
+
+
+def test_dynamic_account_count(tmp_path):
+    def expand(raw):
+        for number in (4, 5):
+            raw["accounts"].append({"key": f"A{number}", "name": str(number),
+                                    "data_dir": f"accounts/A{number}"})
+    config = Config.load(write_config(tmp_path, expand))
+    config.initialize_directories()
+    assert AccountPaths(tmp_path, "A5").directory.is_dir()
 
 
 def test_direct_http_ignores_environment(monkeypatch):

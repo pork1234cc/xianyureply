@@ -57,12 +57,28 @@ def run(config, config_path: Path, keys, stop_file="data/stop.request", test_cus
             or bridge.get("reply_mode") != "direct_parent_only"
             or bridge.get("write_rpm_per_account") != 60 // REPLY_INTERVAL_SECONDS):
         raise ValueError("要求只接受直接引用、每账号每 5 秒 1 次（每分钟 12 次）、未知不重发")
-    # 单实例锁复用文件锁机制；锁文件位于已受 ACL 保护的账号父目录内。
-    lock_paths = AccountPaths(config.root, "A1")
-    lock_paths.directory.mkdir(parents=True, exist_ok=True)
+    # 单实例锁复用文件锁机制，不提前占用任何账号目录。
     instance_paths = _InstancePaths(config.root / "data")
     with account_lock(instance_paths):
+        from goofish_bridge.account_sync import sync_accounts
+
+        config = sync_accounts(config)
+        if keys is None:
+            keys = [a["key"] for a in config.raw["accounts"]
+                    if AccountPaths(config.root, a["key"]).file("binding.json").exists()]
+        if not keys:
+            raise ValueError("没有可启动的已绑定账号，请检查闲鱼分组窗口登录状态")
+        for key in keys:
+            config.account(key)
         return _run_locked(config, config_path, keys, stop_file, test_customer, duration)
+
+
+def synchronize(config):
+    """使用与启动相同的锁，仅同步本地账号。"""
+    from goofish_bridge.account_sync import sync_accounts
+
+    with account_lock(_InstancePaths(config.root / "data")):
+        return sync_accounts(config)
 
 
 class _InstancePaths:

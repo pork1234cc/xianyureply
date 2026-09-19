@@ -89,15 +89,16 @@ def parser() -> argparse.ArgumentParser:
     sub = root.add_subparsers(dest="command", required=True)
     sub.add_parser("doctor", help="本地检查，不向客户发送消息")
     sub.add_parser("status", help="显示本地准备状态")
+    sub.add_parser("sync-accounts", help="读取比特闲鱼分组，去重并补建本地账号")
     auth = sub.add_parser("login", help="指定账号扫码或导入 Cookie")
-    auth.add_argument("--account", required=True, choices=["A1", "A2", "A3"])
+    auth.add_argument("--account", required=True)
     source = auth.add_mutually_exclusive_group(required=True)
     source.add_argument("--qr", action="store_true")
     source.add_argument("--cookies", type=Path)
     auth.add_argument("--timeout", type=int, default=180)
     for name in ("probe-watch", "probe-history", "probe-roundtrip", "probe-route"):
         probe = sub.add_parser(name, help="单账号真实协议验证")
-        probe.add_argument("--account", required=True, choices=["A1", "A2", "A3"])
+        probe.add_argument("--account", required=True)
         probe.add_argument("--seconds", type=int, default=60)
         if name in {"probe-history", "probe-roundtrip"}:
             probe.add_argument("--cid", required=True)
@@ -118,7 +119,7 @@ def parser() -> argparse.ArgumentParser:
         feishu.add_argument("--seconds", type=int, default=180)
     sub.add_parser("feishu-test-message", help="向已确认的本人私聊发送一条固定引用验证消息")
     runtime = sub.add_parser("run", help="启动已绑定账号的双向消息桥")
-    runtime.add_argument("--accounts", nargs="+", choices=["A1", "A2", "A3"], default=["A1", "A2", "A3"])
+    runtime.add_argument("--accounts", nargs="+", help="默认同步后启动全部已绑定账号")
     runtime.add_argument("--test-customer-uid", help="只接收/发送指定测试客户，使用独立测试数据库")
     runtime.add_argument("--duration", type=int, help="运行指定秒数后安全退出")
     sub.add_parser("stop", help="请求正在运行的消息桥安全退出")
@@ -173,6 +174,14 @@ def main() -> int:
     logger.disable("goofish_cli")
     try:
         config = Config.load(args.config)
+        if args.command == "sync-accounts":
+            from goofish_bridge.supervisor import synchronize
+
+            if not (config.raw.get("bitbrowser") or {}).get("enabled"):
+                raise ValueError("请先启用 bitbrowser.enabled")
+            config = synchronize(config)
+            print(f"同步完成，本地账号共 {len(config.raw['accounts'])} 个。")
+            return 0
         if args.command == "doctor":
             return doctor(config)
         if args.command == "status":
@@ -205,9 +214,9 @@ def main() -> int:
             bridge_logger.addHandler(handler)
             if args.duration is not None and not 1 <= args.duration <= 86400:
                 raise ValueError("运行时长应在 1～86400 秒之间")
-            if len(set(args.accounts)) != len(args.accounts):
+            if args.accounts is not None and len(set(args.accounts)) != len(args.accounts):
                 raise ValueError("启动账号不能重复")
-            bridge_logger.info("启动账号：%s", ",".join(args.accounts))
+            bridge_logger.info("启动账号：%s", ",".join(args.accounts) if args.accounts else "自动同步全部账号")
             try:
                 return run(config, args.config, args.accounts,
                            test_customer=args.test_customer_uid, duration=args.duration) or 0

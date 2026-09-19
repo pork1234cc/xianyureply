@@ -57,7 +57,9 @@ def _refresh_bitbrowser_cookie(config: Config, paths: AccountPaths):
     group_name = settings.get("group_name", "闲鱼")
     expected_uid = bound_uid(paths)
     records, network, client = BitBrowserClient(base_url).account_context(
-        group_name, config.account(paths.key)["name"], expected_uid)
+        group_name, config.account(paths.key)["name"], expected_uid,
+        **({"profile_id": config.account(paths.key)["bitbrowser_profile_id"]}
+           if config.account(paths.key).get("bitbrowser_profile_id") else {}))
     pending = paths.file("cookies-bitbrowser-pending.json")
     write_cookies_json(pending, records)
     pending.replace(paths.file("cookies.json"))
@@ -71,7 +73,10 @@ def resolve_account_settings(config: Config, key: str):
         from goofish_bridge.bitbrowser_cookie import BitBrowserClient
 
         api = BitBrowserClient(settings.get("api_url", "http://127.0.0.1:54345"))
-        profile = api.profile_for_account(settings.get("group_name", "闲鱼"), config.account(key)["name"])
+        profile = api.profile_for_account(
+            settings.get("group_name", "闲鱼"), config.account(key)["name"],
+            **({"profile_id": config.account(key)["bitbrowser_profile_id"]}
+               if config.account(key).get("bitbrowser_profile_id") else {}))
         return api.settings_for_profile(profile.profile_id)
     return (NetworkProfile(**config.account(key)["network"]),
             ClientProfile(**config.account(key).get("client", {})))
@@ -116,7 +121,9 @@ def validate_uid(config: Config, paths: AccountPaths, uid: str) -> None:
         raise ValueError("凭据 UID 与配置不符，账号已停止")
     if paths.file("binding.json").exists() and bound_uid(paths) != uid:
         raise ValueError("凭据 UID 与原绑定不符，禁止改绑或消费旧任务")
-    for key in ("A1", "A2", "A3"):
+    keys = {a["key"] for a in config.raw["accounts"]}
+    keys.update(p.parent.name for p in (config.root / "accounts").glob("A*/binding.json"))
+    for key in keys:
         other = AccountPaths(config.root, key)
         if key != paths.key and other.file("binding.json").exists() and bound_uid(other) == uid:
             raise ValueError("该 UID 已绑定到另一账号槽位")
