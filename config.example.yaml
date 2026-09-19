@@ -25,6 +25,13 @@ bitbrowser:
   api_url: http://127.0.0.1:54345
   group_name: 闲鱼
 accounts:
+  # bitbrowser.enabled=true 时，自动读取对应窗口的代理与 UA，忽略下方手工 network/client。
+  # 在比特中设置 noproxy / http / https / socks5；不必另填代理环境变量。
+  # 仅未启用比特来源时，手工代理可改为：
+  # network: {mode: proxy, proxy_url_env: GOOFISH_A1_PROXY_URL}
+  # A2/A3 使用各自独立环境变量；支持 HTTP/HTTPS/SOCKS5 代理。
+  # 可选 client: {user_agent: "对应比特环境的完整桌面 Chrome UA"}
+  # 未启用比特且不填 client 时使用默认 Windows/Chrome 声明；不随机生成指纹。
   - key: A1
     name: 北美草原狼
     expected_uid: ""

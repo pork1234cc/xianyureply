@@ -45,6 +45,26 @@ uv sync --python .venv\Scripts\python.exe --extra dev --locked
 
 ## 本地检查和登录
 
+### 独立代理与客户端信息
+
+**已启用比特来源时，只在比特窗口里管理代理和 UA，不需要填写代理环境变量。** 程序按“闲鱼”分组和账号名称匹配窗口，校验 Cookie UID，再读取同窗口的代理及 UA。支持自定义 HTTP、HTTPS、SOCKS5（含认证），只有窗口明确设置“不使用代理”才直连。窗口设置变更在重启消息桥后生效，同一会话的请求、长连接和重连使用启动时固定的配置；飞书仍直连。
+
+窗口读取失败、地址缺失、未知类型、动态 API 提取或全局代理配置均明确报错，不回退直连，不使用旧地址。SOCKS5 由代理解析目标域名。比特接口中的 UA 用于 HTTP、WebSocket 和 IM 注册声明，程序设备 ID 保持原值；不复制完整浏览器指纹。带认证的 SOCKS5 请在原比特窗口登录，独立 `login --qr` 不支持这一浏览器代理组合，程序会明确拒绝。
+
+只有未启用比特来源时，才使用手工配置：本地 `.env` 填写 `GOOFISH_A1_PROXY_URL`，例如 `socks5://user:password@proxy.example:1080`（凭据特殊字符需 URL 编码），账号配置改为：
+
+```yaml
+network: {mode: proxy, proxy_url_env: GOOFISH_A1_PROXY_URL}
+```
+
+A2、A3 手工模式使用各自变量；HTTP、HTTPS、SOCKS5 都支持，配置不合法或不可达不会回退直连。启用比特后，账号下的手工 network/client 配置被忽略，不应再维护两份代理。
+
+非比特来源可配置 `client: {user_agent: "完整桌面 Chrome UA"}`；支持 Windows/macOS/Linux 桌面 Chrome，未填写时使用固定 Windows 10 / Chrome 133。比特来源则自动读取窗口 UA，无需另填。
+
+不要为更换代理或 UA 清空 `device.json`、`im_token.json`。现有程序设备 ID 按账号保持稳定，Token 获取和注册使用同一 ID；它与比特浏览器设备指纹不是同一概念。代理隔离与声明一致性不能保证平台风控结果。
+
+可运行 `.\.venv\Scripts\python.exe scripts/probe_bitbrowser_proxy.py --account A1`，只读取该窗口配置，匿名验证闲鱼首页、API 域名的 TLS 与 WSS 握手，并与直连对照。不携带 Cookie、Token，不发送 IM 注册或客户消息；输出不含代理凭据。它不能代替账号认证、长期稳定性或客户收件验收。
+
 ```powershell
 .\.venv\Scripts\python.exe -m goofish_bridge doctor
 .\.venv\Scripts\python.exe -m goofish_bridge login --account A1 --qr

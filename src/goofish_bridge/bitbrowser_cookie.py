@@ -6,8 +6,12 @@ import json
 import time
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import quote
 
 import requests
+
+from goofish_bridge.network import NetworkProfile
+from goofish_cli.core.client_profile import ClientProfile
 
 
 class BitBrowserError(RuntimeError):
@@ -167,15 +171,70 @@ class BitBrowserClient:
 
     def cookies_for_account(self, group_name: str, account_name: str,
                             expected_uid: str = "") -> list[dict[str, Any]]:
+        profile = self.profile_for_account(group_name, account_name)
+        records = self.cookies(profile.profile_id)
+        self.validate_records(records, account_name, expected_uid)
+        return records
+
+    def profile_for_account(self, group_name: str, account_name: str) -> BitBrowserProfile:
         profiles = self.profiles(group_name)
         matches = [profile for profile in profiles if profile.name == account_name]
         if len(matches) != 1:
             raise BitBrowserError(f"分组 {group_name} 中账号名称匹配不唯一：{account_name}")
-        records = self.cookies(matches[0].profile_id)
+        return matches[0]
+
+    @staticmethod
+    def validate_records(records: list[dict[str, Any]], account_name: str, expected_uid: str) -> None:
         uid = next((item["value"] for item in records if item["name"] == "unb"), "")
         if not uid or (expected_uid and uid != expected_uid):
             raise BitBrowserError(f"比特浏览器账号 {account_name} Cookie UID 与绑定不符")
         required = {item["name"] for item in records}
         if not {"unb", "_m_h5_tk", "cookie2"} <= required:
             raise BitBrowserError(f"比特浏览器账号 {account_name} Cookie 缺少闲鱼关键字段")
-        return records
+
+    @staticmethod
+    def parse_settings(detail: dict) -> tuple[NetworkProfile, ClientProfile]:
+        """只解析明确的自定义代理；动态提取、全局代理不能拿旧地址猜测。"""
+        if not isinstance(detail, dict):
+            raise BitBrowserError("比特窗口详情格式无效")
+        if detail.get("proxyMethod") != 2 or detail.get("isGlobalProxyInfo"):
+            raise BitBrowserError("仅支持比特自定义代理；动态提取或全局代理尚不能可靠读取")
+        kind = detail.get("proxyType")
+        if kind == "noproxy":
+            network = NetworkProfile()
+        else:
+            if kind not in {"http", "https", "socks5"}:
+                raise BitBrowserError("比特窗口代理类型缺失或不支持")
+            host, port = detail.get("host"), detail.get("port")
+            if (not isinstance(host, str) or not host
+                    or any(char in host for char in "/@?#") or any(c.isspace() for c in host)):
+                raise BitBrowserError("比特窗口代理主机无效")
+            if isinstance(port, str) and port.isdecimal():
+                port = int(port)
+            if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+                raise BitBrowserError("比特窗口代理端口无效")
+            username, password = detail.get("proxyUserName") or "", detail.get("proxyPassword") or ""
+            if not isinstance(username, str) or not isinstance(password, str) or (password and not username):
+                raise BitBrowserError("比特窗口代理认证字段无效")
+            auth = f"{quote(username, safe='')}:{quote(password, safe='')}@" if username else ""
+            host = f"[{host}]" if ":" in host and not host.startswith("[") else host
+            network = NetworkProfile(mode="proxy", proxy_url=f"{kind}://{auth}{host}:{port}")
+        fingerprint = detail.get("browserFingerPrint")
+        if not isinstance(fingerprint, dict) or not fingerprint.get("userAgent"):
+            raise BitBrowserError("比特窗口缺少明确的 User-Agent，请先保存窗口指纹配置")
+        return network, ClientProfile(user_agent=fingerprint["userAgent"])
+
+    def settings_for_profile(self, profile_id: str) -> tuple[NetworkProfile, ClientProfile]:
+        detail = self._post("/browser/detail", {"id": profile_id})
+        if isinstance(detail, dict) and detail.get("id", profile_id) != profile_id:
+            raise BitBrowserError("比特窗口详情身份不匹配")
+        return self.parse_settings(detail)
+
+    def account_context(self, group_name: str, account_name: str, expected_uid: str):
+        """同一窗口提供凭据、代理与 UA；由调用方固定到账号会话。"""
+        profile = self.profile_for_account(group_name, account_name)
+        records = self.cookies(profile.profile_id)
+        self.validate_records(records, account_name, expected_uid)
+        # 无头刷新可能更新窗口 UA，读取完成后的配置再固定到会话。
+        network, client = self.settings_for_profile(profile.profile_id)
+        return records, network, client

@@ -90,6 +90,8 @@ def parse_operator_event(raw: dict, app_id: str, allowed_open_id: str, binding=N
 def credentials(config):
     settings = config.raw["feishu"]
     NetworkProfile(**settings["network"])
+    if settings["network"]["mode"] != "direct":
+        raise ValueError("飞书目前仅支持直连；独立代理配置只适用于闲鱼账号")
     values = [os.getenv(settings[field], "") for field in
               ("app_id_env", "app_secret_env", "allowed_open_id_env")]
     if not all(values):

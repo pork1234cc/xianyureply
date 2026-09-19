@@ -24,21 +24,15 @@ import websockets
 from loguru import logger
 from websockets.asyncio.client import ClientConnection
 
+from goofish_cli.core.client_profile import ClientProfile
 from goofish_cli.core.errors import GoofishError
 from goofish_cli.core.session import Session
 from goofish_cli.core.sign import decrypt, generate_mid, generate_uuid
 from goofish_cli.core.token import IM_APP_KEY, get_access_token
 
 WS_URL = "wss://wss-goofish.dingtalk.com/"
-UA_WEB = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
-)
-UA_IM = (
-    UA_WEB
-    + " DingTalk(2.1.5) OS(Windows/10) Browser(Chrome/133.0.0.0) "
-    + "DingWeb/2.1.5 IMPaaS DingWeb/2.1.5"
-)
+UA_WEB = ClientProfile().user_agent
+UA_IM = ClientProfile().im_user_agent
 
 
 def _cookie_header(session: Session) -> str:
@@ -52,7 +46,7 @@ def _handshake_headers(session: Session) -> dict[str, str]:
         "Connection": "Upgrade",
         "Pragma": "no-cache",
         "Cache-Control": "no-cache",
-        "User-Agent": UA_WEB,
+        "User-Agent": session.client.user_agent,
         "Origin": "https://www.goofish.com",
         "Accept-Encoding": "gzip, deflate, br, zstd",
         "Accept-Language": "zh-CN,zh;q=0.9",
@@ -62,7 +56,8 @@ def _handshake_headers(session: Session) -> dict[str, str]:
 @asynccontextmanager
 async def connect(session: Session) -> AsyncIterator[ClientConnection]:
     """建立 WebSocket 连接（未 reg）。外层自己 reg + heartbeat。"""
-    async with websockets.connect(
+    connector = session.websocket_connect or websockets.connect
+    async with connector(
         WS_URL,
         additional_headers=_handshake_headers(session),
         ping_interval=None,  # 禁用 WS ping，我们走 LWP /! 心跳
@@ -90,7 +85,7 @@ async def register(
             "cache-header": "app-key token ua wv",
             "app-key": IM_APP_KEY,
             "token": token,
-            "ua": UA_IM,
+            "ua": session.client.im_user_agent,
             "dt": "j",
             "wv": "im:3,au:3,sy:6",
             "sync": "0,0;0;0;",
@@ -332,7 +327,7 @@ async def collect_session_cids(
                 "cache-header": "app-key token ua wv",
                 "app-key": IM_APP_KEY,
                 "token": token,
-                "ua": UA_IM,
+                "ua": session.client.im_user_agent,
                 "dt": "j",
                 "wv": "im:3,au:3,sy:6",
                 "sync": "0,0;0;0;",

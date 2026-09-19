@@ -51,7 +51,7 @@ def test_direct_http_ignores_environment(monkeypatch):
 
 
 def test_proxy_fails_closed():
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(ValueError):
         NetworkProfile(mode="proxy")
 
 
@@ -60,3 +60,53 @@ def test_websocket_explicit_direct(monkeypatch):
     monkeypatch.setattr("goofish_bridge.network.websockets.connect", lambda uri, **kw: seen.update(kw))
     NetworkProfile().websocket("wss://example.com", proxy="http://wrong")
     assert seen["proxy"] is None
+
+
+def test_account_proxy_applies_to_http_and_websocket(monkeypatch):
+    proxy = "http://user:secret@127.0.0.1:18080"
+    monkeypatch.setenv("ACCOUNT_PROXY", proxy)
+    monkeypatch.setenv("HTTPS_PROXY", "http://wrong:9999")
+    profile = NetworkProfile(mode="proxy", proxy_url_env="ACCOUNT_PROXY")
+    with profile.http() as session:
+        options = session.merge_environment_settings("https://example.com", {}, False, True, None)
+        assert options["proxies"] == {"http": proxy, "https": proxy}
+        assert not session.trust_env
+    seen = []
+    monkeypatch.setattr("goofish_bridge.network.websockets.connect",
+                        lambda uri, **kw: seen.append(kw["proxy"]))
+    profile.websocket("wss://example.com")
+    monkeypatch.setenv("ACCOUNT_PROXY", "http://changed:9999")
+    profile.websocket("wss://example.com")
+    assert seen == [proxy, proxy]
+    assert "secret" not in repr(profile)
+
+
+@pytest.mark.parametrize("value", ["", "localhost:8080", "socks4://localhost:1080",
+                                  "http://", "http://localhost:bad", "http://localhost/path"])
+def test_invalid_proxy_never_falls_back_to_direct(monkeypatch, value):
+    monkeypatch.setenv("ACCOUNT_PROXY", value)
+    with pytest.raises(ValueError):
+        NetworkProfile(mode="proxy", proxy_url_env="ACCOUNT_PROXY")
+
+
+def test_proxy_browser_options(monkeypatch):
+    monkeypatch.setenv("ACCOUNT_PROXY", "http://user:p%40ss@localhost:8080")
+    options = NetworkProfile(mode="proxy", proxy_url_env="ACCOUNT_PROXY").browser_options()
+    assert "--no-proxy-server" not in options.get("args", [])
+    assert options["proxy"] == {"server": "http://localhost:8080", "username": "user", "password": "p@ss"}
+
+
+def test_socks5_uses_remote_dns_in_both_clients(monkeypatch):
+    profile = NetworkProfile(mode="proxy", proxy_url="socks5://u:p@localhost:1080")
+    assert profile.http().proxies["https"] == "socks5h://u:p@localhost:1080"
+    seen = {}
+    monkeypatch.setattr("goofish_bridge.network.websockets.connect", lambda uri, **kw: seen.update(kw))
+    profile.websocket("wss://example.com")
+    assert seen["proxy"] == "socks5h://u:p@localhost:1080"
+    assert "u:p" not in repr(profile)
+
+
+def test_authenticated_socks_qr_is_explicitly_rejected():
+    profile = NetworkProfile(mode="proxy", proxy_url="socks5://u:p@localhost:1080")
+    with pytest.raises(ValueError, match="比特"):
+        profile.browser_options()

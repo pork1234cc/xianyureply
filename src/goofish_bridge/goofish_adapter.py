@@ -144,7 +144,8 @@ async def connection(session, store: ProbeStore, channel: str, on_message=None, 
     guard.check()
     with guard.watch():
         token = await asyncio.to_thread(get_access_token, session)
-    async with NetworkProfile().websocket(
+    connector = session.websocket_connect or NetworkProfile().websocket
+    async with connector(
         WS_URL, additional_headers=_handshake_headers(session),
         ping_interval=None, max_size=4 * 1024 * 1024, open_timeout=15,
     ) as ws:

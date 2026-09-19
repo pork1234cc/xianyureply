@@ -13,12 +13,15 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import requests
 from loguru import logger
 
+from goofish_cli.core.client_profile import DEFAULT_USER_AGENT, ClientProfile
 from goofish_cli.core.cookie_types import CookieRecord
 from goofish_cli.core.crypto import decrypt_cookies, encrypt_cookies
 from goofish_cli.core.errors import AuthRequiredError
@@ -36,11 +39,7 @@ def resolve_cookie_path(cookie_path: Path | str | None = None) -> Path:
         cookie_path or os.environ.get("GOOFISH_COOKIES_PATH") or DEFAULT_COOKIE_PATH
     ))
 DEVICE_CACHE_PATH = Path.home() / ".goofish-cli" / "device.json"
-USER_AGENT = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/146.0.0.0 Safari/537.36"
-)
+USER_AGENT = DEFAULT_USER_AGENT
 
 
 def _records_to_flat(records: list[CookieRecord]) -> dict[str, str]:
@@ -75,6 +74,8 @@ class Session:
     tracknick: str
     device_id: str
     cookie_records: list[CookieRecord] = field(default_factory=list)
+    client: ClientProfile = field(default_factory=ClientProfile)
+    websocket_connect: Callable[..., Any] | None = field(default=None, repr=False)
 
     @classmethod
     def load(cls, cookie_path: Path | str | None = None) -> Session:
@@ -162,24 +163,25 @@ def write_cookies_json(path: Path, cookies) -> None:
     path.chmod(0o600)
 
 
-def _load_or_mint_device_id(unb: str) -> str:
+def _load_or_mint_device_id(unb: str, cache_path: Path | None = None) -> str:
     """device_id 必须在 unb 维度稳定。
 
     IM WebSocket 的 accessToken 会绑定 (appKey, deviceId)。若每次 Session.load 调用
     JS 重新随机生成 device_id，token 签发时用 A，/reg 时用 B，会返回 401
     "device id or appkey is not equal"。
     """
-    if DEVICE_CACHE_PATH.exists():
+    path = cache_path if cache_path is not None else DEVICE_CACHE_PATH
+    if path.exists():
         try:
-            raw = json.loads(DEVICE_CACHE_PATH.read_text())
+            raw = json.loads(path.read_text(encoding="utf-8"))
             if raw.get("unb") == unb and raw.get("device_id"):
                 return raw["device_id"]
         except (json.JSONDecodeError, OSError):
             pass
     device_id = generate_device_id(unb)
-    DEVICE_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    DEVICE_CACHE_PATH.write_text(json.dumps({"unb": unb, "device_id": device_id}))
-    DEVICE_CACHE_PATH.chmod(0o600)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"unb": unb, "device_id": device_id}, ensure_ascii=False), encoding="utf-8")
+    path.chmod(0o600)
     return device_id
 
 

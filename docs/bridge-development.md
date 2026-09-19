@@ -1,5 +1,29 @@
 # 消息桥开发记录
 
+## 高频问题记录
+
+- 2026-09-19：用户明确以比特窗口作为账号代理配置源。启用比特来源时直接读取对应窗口，不能要求另填代理环境变量维护两份配置；需同时覆盖 HTTP、HTTPS、SOCKS5、认证及代理端 DNS，并在配置读取失败时停止，禁止静默直连。
+
+## 比特窗口代理来源与真实 SOCKS5 验证（2026-09-19）
+
+- 已读取用户指定“北美草原狼”窗口：自定义 SOCKS5，用户名和密码均已配置，窗口声明为 Windows / Chrome 147.0.7727.57。代理地址、认证信息及 Cookie 未输出到报告或日志。
+- 启用比特来源时，同窗口提供 Cookie、代理及 UA，保留分组、名称唯一匹配及 Cookie UID 与本地绑定校验；手工 network/client 不再参与，只有明确 noproxy 才直连。Cookie 刷新移至 load_session，一次完成，避免 Worker 启动两次初始化导致重复读取或打开窗口。配置在账号会话创建时固定，重连沿用，不自动切换出口。
+- 支持 HTTP、HTTPS、SOCKS5，SOCKS5 使用代理端 DNS。仅新增 PySocks 1.7.1、python-socks 3.1.1，未同步移除旧环境依赖；锁文件已更新。动态 API 提取、全局代理、SSH 未实现可靠解析，明确拒绝；带认证 SOCKS5 应在原比特窗口登录，独立扫码 Chrome 入口明确拒绝。
+- 离线真实 SOCKS5 服务测试发现 websockets 15 将 URL 编码后的认证字符串直接发送，特殊字符密码与 requests 行为不同。已用独立连接子类对认证字段解码，保留标准 HTTP/HTTPS CONNECT、目标 WSS TLS 和证书校验，不修改第三方模块全局函数。依赖限定 websockets 15.x；本机真实 TLS 隧道测试同时覆盖 HTTP 与 HTTPS 代理中的特殊字符认证。
+- 首轮 ipify、闲鱼首页 HTTPS 出现 SSLEOFError，部分其他目标连接失败；随后对照及最终代码复测均为闲鱼首页 200、API 域名根路径 404（证明 TLS/HTTP 可达，不代表业务接口成功）、HTTPS 对照站点 200、闲鱼 WSS 握手成功。WSS 未携带 Cookie、Token 或发送 /reg，不是账号登录、收件或长期稳定性验收。保留初期连接失败记录，不宣称代理长期稳定或出口 IP 已对照。
+- 最终全量 356 项测试、全仓 Ruff、离线锁文件检查、git diff --check、本地 doctor 通过；仅既有飞书 SDK datetime 弃用提示。现有常驻服务未重启，运行中的旧进程尚未切换代理；未修改实际 config.yaml、.env、浏览器窗口设置或真实账号凭据。新逻辑下次重启时生效。
+- 匿名复测入口：`python scripts/probe_bitbrowser_proxy.py --account A1`。字段依据：[比特官方窗口 API](https://doc.bitbrowser.net/api-docs/browser-profiles)；SOCKS 依赖和代理行为参考：[websockets 代理文档](https://websockets.readthedocs.io/en/stable/topics/proxies.html)，实际兼容性以本地锁定 15.0.1 源码和测试为准。
+
+## 账号代理与客户端一致性修复（2026-09-19）
+
+- 按用户确认，先实现代理能力，现有本地配置继续直连；不修改真实 `.env`、Cookie、设备缓存或运行服务。每账号可通过独立环境变量配置 HTTP/HTTPS 代理；不支持 SOCKS，飞书保持直连。
+- NetworkProfile 创建时固定代理地址，HTTP、WebSocket、消息收发、历史查询及重连共用账号出口。独立扫码 Chrome 使用同一账号代理，保留浏览器自身 UA；比特窗口仍由比特管理其网络与设备配置，不自动继承或改写。
+- 新增 ClientProfile，将协议 HTTP UA、Client Hints、WebSocket UA 和 IM 注册声明统一到同一账号配置。默认沿用长连接的 Windows 10 / Chrome 133，可通过 client.user_agent 显式配置其他受支持的桌面 Chrome UA；同步声明不等于复制浏览器指纹。
+- 设备 ID 改为从账号明确路径读取，保留已有值；代理、UA 和同账号 Cookie 更新不重置设备 ID，不清空 IM Token。独立会话持有连接工厂，不再在桥接长连接入口无条件创建默认直连出口。
+- 先通过失败测试复现代理未实现、长连接丢失账号代理、HTTP/WS 声明不一致，以及扫码入口未传网络配置，再逐项修复。测试覆盖缺失/无效代理拒绝、账号隔离、重连固定出口、已有设备缓存保留、自定义 UA 和飞书不支持代理时明确拒绝。
+- 本机真实代理协议测试验证 requests 的 HTTP 请求、HTTPS CONNECT 和 websockets 的 WSS CONNECT，代理拒绝后抛错，不回退直连；未使用真实外部代理，也未向闲鱼发送测试消息。
+- 验证：全量 337 项测试通过（仅既有飞书 SDK datetime 弃用提示）；最后扫码参数调整后相关 15 项复核通过。Ruff、git diff --check、离线锁文件检查、本地 doctor 通过，中文输出正常。websockets 下限修正为 15，锁定版本仍为 15.0.1，没有升级安装依赖。配置方法见启动说明；新代码待下次正常重启加载，外部代理及真实平台联调尚未执行。
+
 设计依据：仓库内 `docs/goofish_feishu_bridge_plan.md`（工作区原始方案的归档副本），2026-09-19 v1.0。
 
 ## 实施顺序与边界

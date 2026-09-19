@@ -13,6 +13,7 @@ from typing import Any
 
 from loguru import logger
 
+from goofish_cli.core.client_profile import ClientProfile
 from goofish_cli.core.errors import (
     AuthRequiredError,
     GoofishError,
@@ -20,7 +21,7 @@ from goofish_cli.core.errors import (
     RiskControlError,
     SignError,
 )
-from goofish_cli.core.session import USER_AGENT, Session
+from goofish_cli.core.session import Session
 from goofish_cli.core.sign import generate_sign
 
 APP_KEY = "34839810"
@@ -41,23 +42,22 @@ _AUTH_KEYWORDS = (
 )
 
 
-def default_headers() -> dict[str, str]:
+def default_headers(client: ClientProfile | None = None) -> dict[str, str]:
+    client = client or ClientProfile()
     return {
         "accept": "application/json",
-        "accept-language": "en,zh-CN;q=0.9,zh;q=0.8,zh-TW;q=0.7,ja;q=0.6",
+        "accept-language": "zh-CN,zh;q=0.9",
         "cache-control": "no-cache",
         "content-type": "application/x-www-form-urlencoded",
         "origin": "https://www.goofish.com",
         "pragma": "no-cache",
         "priority": "u=1, i",
         "referer": "https://www.goofish.com/",
-        "sec-ch-ua": '"Chromium";v="146", "Not-A.Brand";v="24", "Google Chrome";v="146"',
-        "sec-ch-ua-mobile": "?0",
-        "sec-ch-ua-platform": '"macOS"',
+        **client.hints,
         "sec-fetch-dest": "empty",
         "sec-fetch-mode": "cors",
         "sec-fetch-site": "same-site",
-        "user-agent": USER_AGENT,
+        "user-agent": client.user_agent,
     }
 
 
@@ -108,7 +108,7 @@ def call(
     resp = session.http.post(
         url,
         params=params,
-        headers=headers or default_headers(),
+        headers=headers or default_headers(session.client),
         data={"data": data_val},
         timeout=30,
     )

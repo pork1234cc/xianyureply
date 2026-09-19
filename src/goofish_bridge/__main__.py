@@ -18,6 +18,7 @@ from urllib.parse import unquote
 
 from goofish_bridge.config import AccountPaths, Config
 from goofish_bridge.network import NetworkProfile
+from goofish_cli.core.client_profile import ClientProfile
 
 try:
     sys.stdout.reconfigure(encoding="utf-8")
@@ -33,13 +34,17 @@ def doctor(config: Config) -> int:
     checks.append({"检查": "Node.js", "通过": bool(shutil.which("node"))})
     checks.append({"检查": "项目虚拟环境", "通过": Path(sys.prefix) == config.root / ".venv"})
     for account in config.raw["accounts"]:
-        NetworkProfile(**account["network"])
+        if not (config.raw.get("bitbrowser") or {}).get("enabled"):
+            NetworkProfile(**account["network"])
+            ClientProfile(**account.get("client", {}))
         paths = AccountPaths(config.root, account["key"])
         checks.append({"检查": f"{paths.key} 凭据与人工绑定",
                        "通过": paths.file("cookies.json").exists()
                        and paths.file("binding.json").exists()})
     feishu = config.raw["feishu"]
     NetworkProfile(**feishu["network"])
+    if feishu["network"]["mode"] != "direct":
+        raise ValueError("飞书目前仅支持直连；独立代理配置只适用于闲鱼账号")
     for field in ("app_id_env", "app_secret_env", "allowed_open_id_env"):
         checks.append({"检查": f"环境变量 {feishu[field]}", "通过": bool(os.getenv(feishu[field]))})
     print(json.dumps({"阶段": "MVP 开发版；本地准备检查不代表完整运行验收", "检查结果": checks},
@@ -51,6 +56,7 @@ def login(config: Config, args) -> int:
     from goofish_bridge.account import (
         account_lock,
         initialize_account,
+        resolve_account_settings,
         save_login,
         scan_login,
         validate_uid,
@@ -59,7 +65,10 @@ def login(config: Config, args) -> int:
 
     paths = initialize_account(config, args.account)
     with account_lock(paths):
-        records = asyncio.run(scan_login(paths, args.timeout)) if args.qr else _load_cookies(args.cookies)
+        records = asyncio.run(scan_login(
+            paths, args.timeout,
+            network=resolve_account_settings(config, args.account)[0],
+        )) if args.qr else _load_cookies(args.cookies)
         flat = _records_to_flat(records)
         uid = flat.get("unb", "")
         if not uid:

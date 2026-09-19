@@ -18,6 +18,7 @@ from contextlib import asynccontextmanager
 import pytest
 
 from goofish_cli.commands.message import send as send_mod
+from goofish_cli.core.client_profile import ClientProfile
 from goofish_cli.core.errors import GoofishError
 
 SEND_LWP = "/r/MessageSend/sendByReceiverScope"
@@ -25,6 +26,7 @@ CREATE_LWP = "/r/SingleChatConversation/create"
 
 
 class FakeSession:
+    client = ClientProfile()
     unb = "user-1"
     device_id = "device-1"
 

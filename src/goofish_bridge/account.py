@@ -14,6 +14,7 @@ from uuid import uuid4
 
 from goofish_bridge.config import AccountPaths, Config
 from goofish_bridge.network import NetworkProfile
+from goofish_cli.core.client_profile import ClientProfile
 
 _active_directory: Path | None = None
 
@@ -22,7 +23,9 @@ def initialize_account(config: Config, key: str) -> AccountPaths:
     """仅允许在独立账号命令进程启动时设置一次上游兼容路径。"""
     global _active_directory
     paths = AccountPaths(config.root, key)
-    NetworkProfile(**config.account(key)["network"])
+    if not (config.raw.get("bitbrowser") or {}).get("enabled"):
+        NetworkProfile(**config.account(key)["network"])
+        ClientProfile(**config.account(key).get("client", {}))
     if _active_directory is not None and _active_directory != paths.directory:
         raise RuntimeError("禁止在同一进程切换账号，请启动新的命令进程")
     _active_directory = paths.directory
@@ -39,12 +42,11 @@ def initialize_account(config: Config, key: str) -> AccountPaths:
     token.TOKEN_CACHE = paths.file("im_token.json")
     guard.STATE_PATH = paths.file("circuit.json")
     limiter.STATE_PATH = paths.file("limiter.json")
-    _refresh_bitbrowser_cookie(config, paths)
     return paths
 
 
-def _refresh_bitbrowser_cookie(config: Config, paths: AccountPaths) -> None:
-    """启动账号前从比特浏览器闲鱼分组同步 Cookie；未启用时保持原有文件登录。"""
+def _refresh_bitbrowser_cookie(config: Config, paths: AccountPaths):
+    """装载会话时一次读取同窗口 Cookie、网络和 UA；初始化不重复刷新。"""
     settings = config.raw.get("bitbrowser") or {}
     if not settings.get("enabled"):
         return
@@ -53,12 +55,26 @@ def _refresh_bitbrowser_cookie(config: Config, paths: AccountPaths) -> None:
 
     base_url = settings.get("api_url", "http://127.0.0.1:54345")
     group_name = settings.get("group_name", "闲鱼")
-    expected_uid = config.account(paths.key).get("expected_uid", "")
-    records = BitBrowserClient(base_url).cookies_for_account(
+    expected_uid = bound_uid(paths)
+    records, network, client = BitBrowserClient(base_url).account_context(
         group_name, config.account(paths.key)["name"], expected_uid)
     pending = paths.file("cookies-bitbrowser-pending.json")
     write_cookies_json(pending, records)
     pending.replace(paths.file("cookies.json"))
+    return network, client
+
+
+def resolve_account_settings(config: Config, key: str):
+    """扫码入口只取窗口配置，不读取或替换账号凭据。"""
+    settings = config.raw.get("bitbrowser") or {}
+    if settings.get("enabled"):
+        from goofish_bridge.bitbrowser_cookie import BitBrowserClient
+
+        api = BitBrowserClient(settings.get("api_url", "http://127.0.0.1:54345"))
+        profile = api.profile_for_account(settings.get("group_name", "闲鱼"), config.account(key)["name"])
+        return api.settings_for_profile(profile.profile_id)
+    return (NetworkProfile(**config.account(key)["network"]),
+            ClientProfile(**config.account(key).get("client", {})))
 
 
 @contextmanager
@@ -131,17 +147,22 @@ def load_session(config: Config, paths: AccountPaths):
     from goofish_cli.core.session import Session, _load_cookies, _load_or_mint_device_id
 
     uid = bound_uid(paths)
+    validate_uid(config, paths, uid)
+    runtime_settings = _refresh_bitbrowser_cookie(config, paths)
     records = _load_cookies(paths.file("cookies.json"))
     flat = {r["name"]: r["value"] for r in records}
     if flat.get("unb") != uid or not flat.get("_m_h5_tk"):
         raise ValueError("当前凭据身份与绑定不符或缺少签名 Token")
-    validate_uid(config, paths, uid)
-    http = NetworkProfile(**config.account(paths.key)["network"]).http()
+    network, client = runtime_settings or resolve_account_settings(config, paths.key)
+    http = network.http()
     http.cookies.update(flat)
-    return Session(http, uid, flat.get("tracknick", ""), _load_or_mint_device_id(uid), records)
+    return Session(http, uid, flat.get("tracknick", ""),
+                   _load_or_mint_device_id(uid, paths.file("device.json")), records,
+                   client=client, websocket_connect=network.websocket)
 
 
-async def scan_login(paths: AccountPaths, timeout: int = 180) -> list:
+async def scan_login(paths: AccountPaths, timeout: int = 180, *,
+                     network: NetworkProfile | None = None) -> list:
     from playwright.async_api import async_playwright
 
     # 每次创建专属空目录，不导入本机浏览器状态；保留目录便于用户自行清理。
@@ -149,7 +170,7 @@ async def scan_login(paths: AccountPaths, timeout: int = 180) -> list:
     profile.mkdir(parents=True)
     async with async_playwright() as playwright:
         context = await playwright.chromium.launch_persistent_context(
-            user_data_dir=str(profile), **NetworkProfile().browser_options(),
+            user_data_dir=str(profile), **(network or NetworkProfile()).browser_options(),
             locale="zh-CN", timezone_id="Asia/Shanghai",
         )
         try:
