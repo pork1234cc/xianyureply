@@ -12,6 +12,42 @@ import requests
 from goofish_bridge.bitbrowser_cookie import BitBrowserClient, BitBrowserError
 
 
+def test_conflicting_live_cookies_use_browser_context(monkeypatch):
+    client = BitBrowserClient("http://bitbrowser")
+    fresh = [{"name": "_m_h5_tk", "value": "new_9999999999999"},
+             {"name": "_m_h5_tk_enc", "value": "new-enc"}]
+    mixed = fresh + [{"name": "_m_h5_tk", "value": "old_1"},
+                     {"name": "_m_h5_tk_enc", "value": "old-enc"}]
+    monkeypatch.setattr(client, "_post", lambda path, body: mixed)
+    monkeypatch.setattr(client, "_read_running_context_cookies", lambda profile: fresh, raising=False)
+    assert client.cookies("p1") == client._parse_cookies(fresh)
+
+
+def test_context_cookie_conflict_is_rejected(monkeypatch):
+    client = BitBrowserClient("http://bitbrowser")
+    mixed = [{"name": "_m_h5_tk", "value": "new_9999999999999"},
+             {"name": "_m_h5_tk", "value": "old_1"}]
+    monkeypatch.setattr(client, "_post", lambda path, body: mixed)
+    monkeypatch.setattr(client, "_read_running_context_cookies", lambda profile: mixed, raising=False)
+    with pytest.raises(BitBrowserError, match="冲突"):
+        client.cookies("p1")
+
+
+def test_first_party_partition_replaces_stale_unpartitioned_pair():
+    records = [
+        {"name": "_m_h5_tk", "value": "new", "partitionKey": "https://goofish.com"},
+        {"name": "_m_h5_tk_enc", "value": "new-enc", "partitionKey": "https://goofish.com"},
+        {"name": "_m_h5_tk", "value": "old"},
+        {"name": "_m_h5_tk_enc", "value": "old-enc"},
+        {"name": "cookie2", "value": "shared"},
+        {"name": "cookie2", "value": "other", "partitionKey": "https://example.com"},
+    ]
+    selected = BitBrowserClient._first_party_cookies(records)
+    assert {r["name"]: r["value"] for r in selected} == {
+        "_m_h5_tk": "new", "_m_h5_tk_enc": "new-enc", "cookie2": "shared"}
+    assert BitBrowserClient._first_party_cookies(list(reversed(records))) == list(reversed(selected))
+
+
 def test_profiles_filters_group_and_goofish(monkeypatch):
     client = BitBrowserClient("http://bitbrowser")
 

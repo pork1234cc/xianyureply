@@ -2,7 +2,7 @@
 
 把多个闲鱼账号的客户消息集中转发到本人的飞书机器人私聊，在飞书中通过卡片或引用消息回复对应客户。
 
-这是运行在本地电脑上的文本消息桥，当前没有接入 AI 模型、知识库或自动回复策略。电脑需要保持开机、联网且不休眠。当前仍处于 MVP 阶段，长期常驻与完整验收进度见 [开发记录](docs/bridge-development.md)，建议保留闲鱼客户端核对消息。
+整个项目就是一个 [Skill](SKILL.md)，包含完整程序、管理脚本和配置说明。安装一个 Skill，配置并运行一个消息桥；开发者直接修改根目录 `src/`。当前没有接入 AI 模型、知识库或自动回复策略。电脑需要保持开机、联网且不休眠，长期常驻与完整验收进度见 [开发记录](docs/bridge-development.md)。
 
 ## 致谢原仓库
 
@@ -22,30 +22,40 @@
 
 ## 一、准备运行环境
 
-以下步骤面向 **Windows + PowerShell**，命令均在项目根目录执行。
+### 安装 Skill（0.2.0，本地验收版）
+
+具备 Windows 文件和命令能力的 Agent 读取根目录 [SKILL.md](SKILL.md)，即可配置、检查、启停和排查消息桥。仓库内只有一份 `src/`，没有内层 Skill 目录。安装 Skill 只复制公开资源，首次部署才初始化环境和配置。
+
+从本仓库安装（命令在使用 Skill 的目标项目目录执行）：
+
+```powershell
+npx --yes skills@1.7.0 add https://github.com/pork1234cc/xianyureply --skill xianyu-feishu-bridge --agent codex --copy --yes
+# Claude Code 使用 --agent claude-code。
+```
+
+本地安装可将仓库地址替换为干净发布目录的绝对路径。本地工作目录含私有账号和环境时，先按文末命令导出，不直接交给安装器。部署见 [配置说明](docs/skill-setup.md)，操作见 [管理命令](docs/skill-operations.md)，验收边界见 [验收记录](docs/skill-validation.md)。首版不原生运行于 Linux/macOS/WSL。
+
+### 初始化与已有项目
+
+安装后可以直接让 Agent “配置并启动闲鱼飞书消息桥”。已有本项目的配置、账号和 `.venv` 时，直接管理当前目录，不再创建第二个实例：
+
+```powershell
+.\.venv\Scripts\python.exe scripts/bridge_control.py status
+.\.venv\Scripts\python.exe scripts/bridge_control.py doctor
+```
+
+首次部署由 Skill 使用已识别的 Python 执行 `scripts/bridge_control.py init --instance "实例绝对路径"`。可原地运行，也可把数据放到安装目录之外，避免安装器更新覆盖配置。只需要一个正式实例。下文手工配置命令均在该实例根目录执行。
 
 | 依赖 | 用途 |
 | --- | --- |
-| Git、uv | 获取源码、安装锁定的 Python 依赖 |
+| uv | 安装锁定的 Python 依赖 |
 | Python 3.12.14 | 按项目已有环境版本安装；包声明最低支持 Python 3.11 |
 | Node.js（可通过 `node` 调用） | 底层 JavaScript 签名 |
 | Google Chrome | 使用独立扫码登录方式时需要 |
 | 比特浏览器及可用的 Local API | 使用比特浏览器自动同步账号时需要 |
 | 飞书企业自建应用 | 开启机器人、配置权限和事件，并发布给本人使用 |
 
-```powershell
-git clone https://github.com/pork1234cc/xianyureply.git
-cd xianyureply
-
-# 首次安装；已有 .venv 时跳过创建环境这行。
-uv venv --python 3.12.14 .venv
-uv sync --python .venv\Scripts\python.exe --extra dev --locked
-
-node --version
-.\.venv\Scripts\python.exe -m goofish_bridge --help
-```
-
-请从本仓库源码安装。项目为保持兼容仍使用 `goofish-cli` 分发包名，仅安装同名 PyPI 包不能保证获得本仓库的消息桥功能。
+项目为保持兼容仍使用 `goofish-cli` 分发包名，请使用本 Skill 携带的程序，不要用同名 PyPI 包替代。
 
 ## 二、创建本地配置
 
@@ -252,12 +262,23 @@ accounts:
 
 ## 开发验证
 
-依赖由 `pyproject.toml` 和 `uv.lock` 管理。安装时包含 `--extra dev` 后，在项目目录执行：
+开发者克隆的整个仓库也是同一个 Skill，直接修改 `src/`，无需生成内层代码副本。依赖由根 `pyproject.toml` 和 `uv.lock` 管理。使用项目已有 `.venv`，需要开发依赖时执行 `uv sync --locked --extra dev`；不要在正式服务运行时变更其环境。
 
 ```powershell
 $env:PYTHONUTF8 = '1'
 .\.venv\Scripts\python.exe -m ruff check src tests
+.\.venv\Scripts\python.exe scripts/build_skill_bundle.py
 .\.venv\Scripts\python.exe -m pytest -q
+.\.venv\Scripts\python.exe scripts/verify_skill_bundle.py
 ```
+
+本地安装或发布验收前，导出到仓库外尚不存在的目录（只复制公开白名单文件）：
+
+```powershell
+.\.venv\Scripts\python.exe scripts/build_skill_bundle.py --output "D:\releases\xianyu-feishu-bridge"
+.\.venv\Scripts\python.exe scripts/verify_skill_bundle.py --skill "D:\releases\xianyu-feishu-bridge" --strict
+```
+
+导出目录是安装产物，不是第二份需要维护的源码。管理脚本和源码均直接在本仓库对应位置修改。
 
 自动测试通过不等于真实平台联调通过，长期在线、移动端引用与客户实际收件仍需实际核对。

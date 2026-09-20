@@ -33,17 +33,17 @@ accounts:
   # 可选 client: {user_agent: "对应比特环境的完整桌面 Chrome UA"}
   # 未启用比特且不填 client 时使用默认 Windows/Chrome 声明；不随机生成指纹。
   - key: A1
-    name: 北美草原狼
+    name: 我的闲鱼账号一
     expected_uid: ""
     data_dir: ./accounts/A1
     network: {mode: direct, proxy_url_env: null}
   - key: A2
-    name: AI编程哥
+    name: 我的闲鱼账号二
     expected_uid: ""
     data_dir: ./accounts/A2
     network: {mode: direct, proxy_url_env: null}
   - key: A3
-    name: 影刀RPA专家
+    name: 我的闲鱼账号三
     expected_uid: ""
     data_dir: ./accounts/A3
     network: {mode: direct, proxy_url_env: null}

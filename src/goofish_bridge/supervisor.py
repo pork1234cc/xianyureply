@@ -13,6 +13,7 @@ from pathlib import Path
 from goofish_bridge.account import AccountPaths, account_lock, bound_uid, validate_uid
 from goofish_bridge.account_worker import worker_main
 from goofish_bridge.feishu_adapter import FeishuRuntime
+from goofish_bridge.lifecycle import RuntimeEvidence
 from goofish_bridge.router import route_card_operator, route_operator
 from goofish_bridge.store import REPLY_INTERVAL_SECONDS, Store
 from goofish_cli.core.sign import generate_mid, generate_uuid
@@ -59,7 +60,7 @@ def run(config, config_path: Path, keys, stop_file="data/stop.request", test_cus
         raise ValueError("要求只接受直接引用、每账号每 5 秒 1 次（每分钟 12 次）、未知不重发")
     # 单实例锁复用文件锁机制，不提前占用任何账号目录。
     instance_paths = _InstancePaths(config.root / "data")
-    with account_lock(instance_paths):
+    with account_lock(instance_paths), RuntimeEvidence(config.root) as evidence:
         from goofish_bridge.account_sync import sync_accounts
 
         config = sync_accounts(config)
@@ -70,7 +71,7 @@ def run(config, config_path: Path, keys, stop_file="data/stop.request", test_cus
             raise ValueError("没有可启动的已绑定账号，请检查闲鱼分组窗口登录状态")
         for key in keys:
             config.account(key)
-        return _run_locked(config, config_path, keys, stop_file, test_customer, duration)
+        return _run_locked(config, config_path, keys, stop_file, test_customer, duration, evidence)
 
 
 def synchronize(config):
@@ -90,7 +91,7 @@ class _InstancePaths:
         return self.directory / "bridge.lock"
 
 
-def _run_locked(config, config_path, keys, stop_file, test_customer, duration):
+def _run_locked(config, config_path, keys, stop_file, test_customer, duration, evidence=None):
     bridge = config.raw["bridge"]
     ctx = multiprocessing.get_context("spawn")
     events = ctx.Queue(maxsize=512)
@@ -131,6 +132,10 @@ def _run_locked(config, config_path, keys, stop_file, test_customer, duration):
             start_worker(key)
         print(f"消息桥已启动：{', '.join(keys)}；请等待账号 ONLINE。按 Ctrl+C 安全退出。", flush=True)
         while True:
+            if evidence:
+                evidence.update(processes=processes.values(),
+                                accounts=[{"key": key, "state": store.account(key)["state"]} for key in keys],
+                                feishu_online=runtime.online.is_set())
             if duration and time.time() - started >= duration:
                 break
             if stop_path.exists() and stop_path.stat().st_mtime > old_stop_mtime:

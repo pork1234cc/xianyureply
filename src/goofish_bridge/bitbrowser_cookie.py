@@ -162,7 +162,53 @@ class BitBrowserClient:
             finally:
                 # 打开请求即使超时也可能已创建窗口，因此也必须进入清理。
                 self.close(profile_id)
-        return self._parse_cookies(data)
+        records = self._parse_cookies(data)
+        if self._conflicting_cookies(records):
+            # 接口可能混入旧快照；整组读取，不能拼接两代签名字段。
+            records = self._parse_cookies(self._first_party_cookies(
+                self._read_running_context_cookies(profile_id)))
+            if self._conflicting_cookies(records):
+                raise BitBrowserError("实时浏览器 Cookie 仍存在同名冲突，拒绝猜测凭据")
+        return records
+
+    @staticmethod
+    def _first_party_cookies(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """当前闲鱼站点分区优先；不混入其他顶层站点的分区凭据。"""
+        current = [r for r in records if r.get("partitionKey") == "https://goofish.com"]
+        names = {r["name"] for r in current}
+        return [r for r in records if r in current or
+                (not r.get("partitionKey") and r["name"] not in names)]
+
+    @staticmethod
+    def _conflicting_cookies(records: list[dict[str, Any]]) -> bool:
+        values: dict[str, str] = {}
+        for record in records:
+            name, value = record["name"], record["value"]
+            if name in values and values[name] != value:
+                return True
+            values[name] = value
+        return False
+
+    def _read_running_context_cookies(self, profile_id: str) -> list[dict[str, Any]]:
+        """只读取已运行的绑定窗口；不导航、不关闭用户窗口。"""
+        from playwright.sync_api import Error, sync_playwright
+
+        pids = self._post("/browser/pids", {"ids": [profile_id]}) or {}
+        if not isinstance(pids, dict) or not pids.get(profile_id):
+            raise BitBrowserError("Cookie 冲突且绑定窗口未运行，请打开原窗口")
+        opened = self._post("/browser/open", {"id": profile_id, "queue": True,
+                                               "ignoreDefaultUrls": True})
+        endpoint = opened.get("ws") or opened.get("http") if isinstance(opened, dict) else None
+        if not endpoint:
+            raise BitBrowserError("已运行窗口未返回调试地址")
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.connect_over_cdp(endpoint, timeout=15000)
+                if len(browser.contexts) != 1:
+                    raise BitBrowserError("绑定窗口浏览器上下文不唯一")
+                return browser.contexts[0].cookies(["https://www.goofish.com"])
+        except Error as exc:
+            raise BitBrowserError("读取绑定窗口实时 Cookie 失败") from exc
 
     @staticmethod
     def _parse_cookies(data: Any) -> list[dict[str, Any]]:

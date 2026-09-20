@@ -7,6 +7,57 @@ on:
     branches: [main]
 
 jobs:
+  skill-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install locked dependencies
+        run: |
+          python -m pip install uv
+          uv sync --locked --extra dev
+      - name: Validate root Skill and Windows lifecycle
+        env:
+          PYTHONUTF8: "1"
+        run: |
+          .\.venv\Scripts\python.exe scripts/verify_skill_bundle.py --source-check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .\.venv\Scripts\python.exe -m ruff check src tests scripts/bridge_control.py scripts/bundle.py scripts/build_skill_bundle.py scripts/verify_skill_bundle.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .\.venv\Scripts\python.exe -m pytest -q tests/test_bridge_lifecycle.py tests/test_skill_control.py tests/test_root_skill_bundle.py
+      - name: Verify isolated NPX installation
+        env:
+          PYTHONUTF8: "1"
+          DISABLE_TELEMETRY: "1"
+        run: |
+          $releasePath = Join-Path $env:RUNNER_TEMP 'root-skill-release/xianyu-feishu-bridge'
+          $installPath = Join-Path $env:RUNNER_TEMP 'root-skill-install'
+          $projectPython = Join-Path $PWD '.venv/Scripts/python.exe'
+          & $projectPython scripts/build_skill_bundle.py --output $releasePath
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Path $installPath | Out-Null
+          Push-Location $installPath
+          try {
+            npx --yes skills@1.7.0 add $releasePath --skill xianyu-feishu-bridge --agent codex claude-code --copy --yes
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            foreach ($agentPath in @('.agents/skills', '.claude/skills')) {
+              $installed = Join-Path $installPath "$agentPath/xianyu-feishu-bridge"
+              & $projectPython "$installed/scripts/verify_skill_bundle.py" --strict
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            }
+          } finally { Pop-Location }
+      - name: Upload complete root Skill
+        uses: actions/upload-artifact@v4
+        with:
+          name: xianyu-feishu-bridge
+          path: ${{ runner.temp }}/root-skill-release/xianyu-feishu-bridge/
+          include-hidden-files: true
+
   sensitive-identifiers:
     runs-on: ubuntu-latest
     steps:
@@ -49,7 +100,7 @@ jobs:
         run: uv run pytest -q
 
   build:
-    needs: [test, sensitive-identifiers]
+    needs: [test, sensitive-identifiers, skill-windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

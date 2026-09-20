@@ -71,6 +71,15 @@ include = [
   ".env.example",
   "uv.lock",
   "pyproject.toml",
+  "SKILL.md",
+  "bundle-manifest.json",
+  ".gitattributes",
+  ".gitignore",
+  ".python-version",
+  ".github/",
+  "ROOT_SKILL_PLAN.md",
+  "SKILL_STANDARDIZATION_PLAN.md",
+  "goofish_feishu_bridge_plan.md",
 ]
 
 [tool.ruff]

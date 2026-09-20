@@ -56,3 +56,9 @@ Thumbs.db
 /accounts/
 /data/
 /config.yaml
+/instance.json
+/startup-registration.json
+/.management.lock
+/runtime/
+/management/
+/backups/

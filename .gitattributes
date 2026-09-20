@@ -1,0 +1,21 @@
+# 固定参与发布哈希的文本换行，保证 Windows 与 CI 检出的字节一致。
+/src/** text eol=lf
+/SKILL.md text eol=lf
+/scripts/** text eol=lf
+/docs/** text eol=lf
+/tests/** text eol=lf
+/.github/workflows/** text eol=lf
+/bundle-manifest.json text eol=lf
+/CHANGELOG.md text eol=lf
+/*_PLAN.md text eol=lf
+/goofish_feishu_bridge_plan.md text eol=lf
+/.python-version text eol=lf
+/.gitattributes text eol=lf
+/.gitignore text eol=lf
+/pyproject.toml text eol=lf
+/uv.lock text eol=lf
+/config.example.yaml text eol=lf
+/.env.example text eol=lf
+/README.md text eol=lf
+/LICENSE text eol=lf
+/NOTICE text eol=lf
