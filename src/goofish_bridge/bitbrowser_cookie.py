@@ -134,8 +134,9 @@ class BitBrowserClient:
                 page = context.new_page()
                 page.goto("https://www.goofish.com/", wait_until="domcontentloaded", timeout=30000)
                 for _ in range(30):
-                    records = context.cookies(["https://www.goofish.com"])
-                    if self._fresh(records):
+                    records = self._first_party_cookies(self._parse_cookies(
+                        context.cookies(["https://www.goofish.com"])))
+                    if self._fresh(records) and not self._conflicting_cookies(records):
                         return records
                     page.wait_for_timeout(1000)
         except Error as exc:
@@ -144,32 +145,40 @@ class BitBrowserClient:
 
     def cookies(self, profile_id: str) -> list[dict[str, Any]]:
         # 已打开窗口优先读取实时凭据，避免同步快照覆盖浏览器中的新令牌。
-        data = self._post("/browser/cookies/get", {"browserId": profile_id})
-        if not data:
-            pids = self._post("/browser/pids", {"ids": [profile_id]}) or {}
-            if not isinstance(pids, dict):
-                raise BitBrowserError("比特浏览器窗口状态返回格式不正确")
-            if pids.get(profile_id):
-                raise BitBrowserError("已打开的比特窗口尚未取得 Cookie，请等待闲鱼页面加载后重试")
-            detail = self._post("/browser/detail", {"id": profile_id}) or {}
-            data = detail.get("cookie", "") if isinstance(detail, dict) else ""
-            snapshot = self._parse_cookies(data or [])
-            if self._fresh(snapshot):
-                return snapshot
-            try:
-                opened = self.open_headless(profile_id)
-                return self._parse_cookies(self._load_headless_page(opened))
-            finally:
-                # 打开请求即使超时也可能已创建窗口，因此也必须进入清理。
-                self.close(profile_id)
-        records = self._parse_cookies(data)
-        if self._conflicting_cookies(records):
-            # 接口可能混入旧快照；整组读取，不能拼接两代签名字段。
+        live_error = None
+        try:
+            data = self._post("/browser/cookies/get", {"browserId": profile_id})
+            records = self._first_party_cookies(self._parse_cookies(data or []))
+        except BitBrowserError as exc:
+            # 单个实时接口失败不等于原窗口退出登录，继续核对运行窗口。
+            live_error, records = exc, []
+        if self._fresh(records) and not self._conflicting_cookies(records):
+            return records
+        pids = self._post("/browser/pids", {"ids": [profile_id]}) or {}
+        if not isinstance(pids, dict):
+            raise BitBrowserError("比特浏览器窗口状态返回格式不正确")
+        if pids.get(profile_id):
+            # 空值、过期、缺字段或冲突均整组读取，不拼接不同来源的签名字段。
             records = self._parse_cookies(self._first_party_cookies(
                 self._read_running_context_cookies(profile_id)))
             if self._conflicting_cookies(records):
                 raise BitBrowserError("实时浏览器 Cookie 仍存在同名冲突，拒绝猜测凭据")
-        return records
+            if not self._fresh(records):
+                raise BitBrowserError("原窗口尚未取得有效 Cookie，不能据此判断浏览器已退出登录")
+            return records
+        if live_error is not None:
+            raise live_error
+        detail = self._post("/browser/detail", {"id": profile_id}) or {}
+        data = detail.get("cookie", "") if isinstance(detail, dict) else ""
+        snapshot = self._first_party_cookies(self._parse_cookies(data or []))
+        if self._fresh(snapshot) and not self._conflicting_cookies(snapshot):
+            return snapshot
+        try:
+            opened = self.open_headless(profile_id)
+            return self._parse_cookies(self._load_headless_page(opened))
+        finally:
+            # 打开请求即使超时也可能已创建窗口，因此也必须进入清理。
+            self.close(profile_id)
 
     @staticmethod
     def _first_party_cookies(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -195,7 +204,7 @@ class BitBrowserClient:
 
         pids = self._post("/browser/pids", {"ids": [profile_id]}) or {}
         if not isinstance(pids, dict) or not pids.get(profile_id):
-            raise BitBrowserError("Cookie 冲突且绑定窗口未运行，请打开原窗口")
+            raise BitBrowserError("读取期间绑定窗口已停止或状态不可确认，请检查原窗口")
         opened = self._post("/browser/open", {"id": profile_id, "queue": True,
                                                "ignoreDefaultUrls": True})
         endpoint = opened.get("ws") or opened.get("http") if isinstance(opened, dict) else None
@@ -206,9 +215,21 @@ class BitBrowserClient:
                 browser = playwright.chromium.connect_over_cdp(endpoint, timeout=15000)
                 if len(browser.contexts) != 1:
                     raise BitBrowserError("绑定窗口浏览器上下文不唯一")
-                return browser.contexts[0].cookies(["https://www.goofish.com"])
+                context = browser.contexts[0]
+                for attempt in range(5):
+                    records = self._first_party_cookies(self._parse_cookies(
+                        context.cookies(["https://www.goofish.com"])))
+                    if self._fresh(records) and not self._conflicting_cookies(records):
+                        return records
+                    if attempt < 4:
+                        time.sleep(1)
         except Error as exc:
             raise BitBrowserError("读取绑定窗口实时 Cookie 失败") from exc
+        if self._conflicting_cookies(records):
+            raise BitBrowserError("实时浏览器 Cookie 仍存在同名冲突，拒绝猜测凭据")
+        raise BitBrowserError(
+            "原窗口尚未取得有效 Cookie（字段缺失或令牌过期），不能据此判断浏览器已退出登录；"
+            "请检查原窗口闲鱼页面是否加载完成或需要验证")
 
     @staticmethod
     def _parse_cookies(data: Any) -> list[dict[str, Any]]:
@@ -227,7 +248,9 @@ class BitBrowserClient:
             if isinstance(name, str) and name and isinstance(value, str):
                 records.append({"name": name, "value": value,
                                 "domain": item.get("domain", ".goofish.com"),
-                                "path": item.get("path", "/")})
+                                "path": item.get("path", "/"),
+                                **({"partitionKey": item["partitionKey"]}
+                                   if item.get("partitionKey") else {})})
         return records
 
     def cookies_for_account(self, group_name: str, account_name: str,

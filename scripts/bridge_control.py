@@ -257,9 +257,10 @@ def start(root, timeout):
     logs.mkdir(exist_ok=True)
     run_id = uuid.uuid4().hex
     with (logs / f"start-{run_id}.stdout.log").open("w", encoding="utf-8") as out, (logs / f"start-{run_id}.stderr.log").open("w", encoding="utf-8") as err:
+        # 虚拟环境启动器在 DETACHED_PROCESS 下仍可能创建控制台，明确禁止窗口。
         child = subprocess.Popen([str(python), "-m", "goofish_bridge.management_probe", str(root), "--run"],
                                  cwd=root, env=environment(root), stdin=subprocess.DEVNULL, stdout=out, stderr=err,
-                                 creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP)
+                                 creationflags=subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         current = evidence(root)

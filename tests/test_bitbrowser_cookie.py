@@ -12,13 +12,90 @@ import requests
 from goofish_bridge.bitbrowser_cookie import BitBrowserClient, BitBrowserError
 
 
+def fresh_cookies(uid="U"):
+    return [{"name": name, "value": value} for name, value in
+            [("unb", uid), ("cookie2", "C"), ("_m_h5_tk", "T_9999999999999")]]
+
+
+@pytest.mark.parametrize("live", [None, [], {"cookies": []}, {"list": []}, "[]",
+                                [{"name": "unb", "value": "U"}],
+                                fresh_cookies() + [{"name": "_m_h5_tk", "value": "old_1"}],
+                                [{"name": name, "value": value} for name, value in
+                                 [("unb", "U"), ("cookie2", "C"), ("_m_h5_tk", "old_1")]]])
+def test_unusable_live_cookie_reads_original_running_window(monkeypatch, live):
+    client = BitBrowserClient("http://bitbrowser")
+    calls = []
+
+    def post(path, body):
+        calls.append(path)
+        if path == "/browser/cookies/get":
+            return live
+        assert path == "/browser/pids"
+        return {"p1": 123}
+
+    reader = MagicMock(return_value=fresh_cookies())
+    monkeypatch.setattr(client, "_post", post)
+    monkeypatch.setattr(client, "_read_running_context_cookies", reader)
+    assert client.cookies("p1") == client._parse_cookies(fresh_cookies())
+    reader.assert_called_once_with("p1")
+    assert "/browser/detail" not in calls
+
+
+def test_failed_live_api_reads_running_window(monkeypatch):
+    client = BitBrowserClient("http://bitbrowser")
+
+    def post(path, body):
+        if path == "/browser/cookies/get":
+            raise BitBrowserError("实时接口读取失败")
+        assert path == "/browser/pids"
+        return {"p1": 123}
+
+    monkeypatch.setattr(client, "_post", post)
+    monkeypatch.setattr(client, "_read_running_context_cookies", lambda _: fresh_cookies())
+    assert client.cookies("p1") == client._parse_cookies(fresh_cookies())
+
+
+@pytest.mark.parametrize("ready", [True, False])
+def test_running_context_waits_without_touching_user_pages(monkeypatch, ready):
+    import playwright.sync_api
+
+    client = BitBrowserClient("http://bitbrowser")
+    calls, sleeps = [], []
+    context, browser, chromium = MagicMock(), MagicMock(), MagicMock()
+    context.cookies.side_effect = [[], fresh_cookies()] if ready else [[]] * 5
+    browser.contexts = [context]
+    chromium.connect_over_cdp.return_value = browser
+    manager = MagicMock()
+    manager.__enter__.return_value = SimpleNamespace(chromium=chromium)
+    monkeypatch.setattr(playwright.sync_api, "sync_playwright", lambda: manager)
+    monkeypatch.setattr(time, "sleep", sleeps.append)
+
+    def post(path, body):
+        calls.append((path, body))
+        return {"p1": 123} if path == "/browser/pids" else {"ws": "ws://localhost/test"}
+
+    monkeypatch.setattr(client, "_post", post)
+    if ready:
+        assert client._read_running_context_cookies("p1") == client._parse_cookies(fresh_cookies())
+        assert sleeps == [1]
+    else:
+        with pytest.raises(BitBrowserError, match="不能据此判断.*退出登录"):
+            client._read_running_context_cookies("p1")
+        assert sleeps == [1] * 4
+    context.new_page.assert_not_called()
+    browser.close.assert_not_called()
+    context.close.assert_not_called()
+    assert [path for path, _ in calls] == ["/browser/pids", "/browser/open"]
+    assert calls[-1][1] == {"id": "p1", "queue": True, "ignoreDefaultUrls": True}
+
+
 def test_conflicting_live_cookies_use_browser_context(monkeypatch):
     client = BitBrowserClient("http://bitbrowser")
-    fresh = [{"name": "_m_h5_tk", "value": "new_9999999999999"},
-             {"name": "_m_h5_tk_enc", "value": "new-enc"}]
+    fresh = fresh_cookies() + [{"name": "_m_h5_tk_enc", "value": "new-enc"}]
     mixed = fresh + [{"name": "_m_h5_tk", "value": "old_1"},
                      {"name": "_m_h5_tk_enc", "value": "old-enc"}]
-    monkeypatch.setattr(client, "_post", lambda path, body: mixed)
+    monkeypatch.setattr(client, "_post", lambda path, body:
+                        {"p1": 123} if path == "/browser/pids" else mixed)
     monkeypatch.setattr(client, "_read_running_context_cookies", lambda profile: fresh, raising=False)
     assert client.cookies("p1") == client._parse_cookies(fresh)
 
@@ -27,7 +104,8 @@ def test_context_cookie_conflict_is_rejected(monkeypatch):
     client = BitBrowserClient("http://bitbrowser")
     mixed = [{"name": "_m_h5_tk", "value": "new_9999999999999"},
              {"name": "_m_h5_tk", "value": "old_1"}]
-    monkeypatch.setattr(client, "_post", lambda path, body: mixed)
+    monkeypatch.setattr(client, "_post", lambda path, body:
+                        {"p1": 123} if path == "/browser/pids" else mixed)
     monkeypatch.setattr(client, "_read_running_context_cookies", lambda profile: mixed, raising=False)
     with pytest.raises(BitBrowserError, match="冲突"):
         client.cookies("p1")
@@ -125,7 +203,7 @@ def test_live_cookies_take_priority_without_opening_or_closing_window(monkeypatc
         calls.append(path)
         if path == "/browser/cookies/get":
             assert body == {"browserId": "profile-1"}
-            return [{"name": "unb", "value": "LIVE"}]
+            return fresh_cookies("LIVE")
         return {"cookie": '[{"name":"unb","value":"STALE"}]'}
 
     monkeypatch.setattr(client, "_post", fake_post)
@@ -165,9 +243,86 @@ def test_empty_live_cookies_never_close_existing_window(monkeypatch):
         return {"profile-1": 123} if path == "/browser/pids" else []
 
     monkeypatch.setattr(client, "_post", fake_post)
-    with pytest.raises(BitBrowserError, match="尚未取得 Cookie"):
+    with pytest.raises(BitBrowserError, match="未返回调试地址"):
         client.cookies("profile-1")
-    assert calls == ["/browser/cookies/get", "/browser/pids"]
+    assert calls == ["/browser/cookies/get", "/browser/pids", "/browser/pids", "/browser/open"]
+
+
+@pytest.mark.parametrize("source", ["live", "snapshot", "headless"])
+def test_all_sources_select_first_party_partition_before_freshness(monkeypatch, source):
+    client = BitBrowserClient("http://bitbrowser")
+    fresh = [{**r, "partitionKey": "https://goofish.com"} for r in fresh_cookies()]
+    mixed = fresh + [{"name": "_m_h5_tk", "value": "old_1"},
+                     {"name": "unb", "value": "OTHER", "partitionKey": "https://example.com"}]
+    calls = []
+
+    def post(path, body):
+        calls.append(path)
+        if path == "/browser/cookies/get":
+            return mixed if source == "live" else {"cookies": []}
+        if path == "/browser/detail":
+            return {"cookie": mixed if source == "snapshot" else []}
+        if path == "/browser/open":
+            assert source == "headless"
+            return {"ws": "ws://localhost/test"}
+        return {}
+
+    monkeypatch.setattr(client, "_post", post)
+    if source == "headless":
+        import playwright.sync_api
+
+        context, chromium, manager = MagicMock(), MagicMock(), MagicMock()
+        context.cookies.return_value = mixed
+        chromium.connect_over_cdp.return_value.contexts = [context]
+        manager.__enter__.return_value = SimpleNamespace(chromium=chromium)
+        monkeypatch.setattr(playwright.sync_api, "sync_playwright", lambda: manager)
+    records = client.cookies("p1")
+    assert {r["name"]: r["value"] for r in records} == {
+        r["name"]: r["value"] for r in fresh_cookies()}
+    assert all(r["partitionKey"] == "https://goofish.com" for r in records)
+    if source != "headless":
+        assert "/browser/open" not in calls
+        assert "/browser/close" not in calls
+
+
+def test_live_api_failure_with_closed_window_does_not_open_or_use_snapshot(monkeypatch):
+    client = BitBrowserClient("http://bitbrowser")
+
+    def post(path, body):
+        if path == "/browser/cookies/get":
+            raise BitBrowserError("实时接口失败")
+        assert path == "/browser/pids"
+        return {}
+
+    monkeypatch.setattr(client, "_post", post)
+    with pytest.raises(BitBrowserError, match="实时接口失败"):
+        client.cookies("p1")
+
+
+def test_window_stops_during_read_does_not_reopen(monkeypatch):
+    client = BitBrowserClient("http://bitbrowser")
+    calls = []
+
+    def post(path, body):
+        calls.append(path)
+        if path == "/browser/cookies/get":
+            return []
+        assert path == "/browser/pids"
+        return {"p1": 123} if len(calls) == 2 else {}
+
+    monkeypatch.setattr(client, "_post", post)
+    with pytest.raises(BitBrowserError, match="已停止"):
+        client.cookies("p1")
+
+
+def test_fallback_still_rejects_uid_mismatch(monkeypatch):
+    client = BitBrowserClient("http://bitbrowser")
+    monkeypatch.setattr(client, "profiles", lambda _: [SimpleNamespace(name="A1", profile_id="p1")])
+    monkeypatch.setattr(client, "_post", lambda path, body:
+                        {"p1": 123} if path == "/browser/pids" else [])
+    monkeypatch.setattr(client, "_read_running_context_cookies", lambda _: fresh_cookies("OTHER"))
+    with pytest.raises(BitBrowserError, match="UID"):
+        client.cookies_for_account("闲鱼", "A1", "EXPECTED")
 
 
 @pytest.mark.parametrize("path,statuses,expected_calls", [

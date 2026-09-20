@@ -82,19 +82,26 @@ def test_environment_drops_foreign_python_path(tmp_path, monkeypatch):
 def test_detached_start_double_start_and_safe_stop(tmp_path, monkeypatch):
     control.atomic_json(tmp_path / "instance.json", {"root": str(tmp_path), "instance_id": "mock"})
     worker = tmp_path / "mock_runtime.py"
-    worker.write_text('''import sys, time
+    worker.write_text('''import sys, time, ctypes, json, multiprocessing
 from pathlib import Path
 from goofish_bridge.lifecycle import RuntimeEvidence, file_lock
-root = Path(sys.argv[1])
-with file_lock(root / "data/bridge.lock"), RuntimeEvidence(root) as state:
-    deadline = time.monotonic() + 15
-    while time.monotonic() < deadline and not (root / "data/stop.request").exists():
-        state.update(accounts=[{"key": "A1", "state": "ONLINE"}], feishu_online=True)
-        time.sleep(0.05)
+def child_probe(path):
+    Path(path).write_text(json.dumps({"console": ctypes.windll.kernel32.GetConsoleWindow()}), encoding="utf-8")
+if __name__ == "__main__":
+    root = Path(sys.argv[1])
+    child_probe(root / "parent-console.json")
+    child = multiprocessing.get_context("spawn").Process(target=child_probe, args=(root / "child-console.json",))
+    child.start()
+    child.join(5)
+    with file_lock(root / "data/bridge.lock"), RuntimeEvidence(root) as state:
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline and not (root / "data/stop.request").exists():
+            state.update(accounts=[{"key": "A1", "state": "ONLINE"}], feishu_online=True)
+            time.sleep(0.05)
 ''', encoding="utf-8")
     real_popen = control.subprocess.Popen
     def mock_process(command, **kwargs):
-        return real_popen([sys.executable, str(worker), str(tmp_path)], **kwargs)
+        return real_popen([command[0], str(worker), str(tmp_path)], **kwargs)
     monkeypatch.setattr(control.subprocess, "Popen", mock_process)
     monkeypatch.setattr(control, "interpreter", lambda _: Path(sys.executable))
     monkeypatch.setattr(control, "doctor", lambda _: {"ok": True})
@@ -103,6 +110,8 @@ with file_lock(root / "data/bridge.lock"), RuntimeEvidence(root) as state:
         assert control.start(tmp_path, 1)["code"] == "ALREADY_RUNNING"
         time.sleep(0.1)
         assert control.evidence(tmp_path)["alive"]
+        assert control.read_json(tmp_path / "parent-console.json")["console"] == 0
+        assert control.read_json(tmp_path / "child-console.json")["console"] == 0
     finally:
         stopped = control.stop(tmp_path, 5)
     assert stopped["code"] == "STOPPED"

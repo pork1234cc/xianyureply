@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "version": "0.2.0",
-  "source_commit": "9092ac43779e2aaf0d56227bee665dd30a7ebf61",
+  "source_commit": "3335f56f9347005f7ed72865d5e747d536ef8080",
   "compatibility": {
     "os": [
       "windows"
@@ -18,8 +18,8 @@
     ".python-version": "f50159fad3f4319868eb38717b91d55843c41e9803014c8de05e116a6d0bcfdc",
     "CHANGELOG.md": "c6e7efba7e129f9ffdc049bb481fd92326acd2a6dba60557c566f7988dc1300d",
     "config.example.yaml": "42f2370eb414bff959be8b83e0923b3be16c2fe1e0afdec602a3c32ca9b0cf5a",
-    "docs/architecture.md": "b93419c8af4ab8fe01ebe17644a0a5b16778d41cbc166ee0a6146d25306fa222",
-    "docs/bridge-development.md": "42aba77347240dafebfc848eb561167d99806aa72edc56c2167f1c9c162513a6",
+    "docs/architecture.md": "37d71426f4544f99461aefee44c415fd0691f304897fabb10ca2a28dce582ff1",
+    "docs/bridge-development.md": "e142e5ee386ab3a87ebadce51e6528eaf29828663dcfcdbd712399af9a4d6cad",
     "docs/bridge-quickstart.md": "ca13ee20f203b9d89b9c35efc97bcd25dc9e17950f63d810729eebc8c741214c",
     "docs/compliance.md": "17fdf4627554d4bfb76e859a92d0e2e6ea935f7d34ac56ecf3373a1a4d387cf3",
     "docs/goofish_feishu_bridge_plan.md": "ae2851d99e8429d3880709648462a6ebf0b0effede2e4fa967fac554e292d5ba",
@@ -35,7 +35,7 @@
     "README.md": "e8ef57d3d80b6699a7cc077c5a6274dcf956aca65b6872fa315a65dfc323bcc1",
     "ROOT_SKILL_PLAN.md": "cad52c39a85db9e5161142f593d8cb30bcdb67d23c268cf07943e3f4148531a5",
     "scripts/bootstrap.ps1": "69aef506e50d45e2d1c2607aca4801af833b8c1dcbfc8bec35343d65d6554474",
-    "scripts/bridge_control.py": "6aec01ddc72fb5fc691d86b1fdac02c7e30a567eccc0715ff0a7005187422bda",
+    "scripts/bridge_control.py": "24627c76e097b840f04976ae308b0ddfa1596f10557ba39ffcf295d0aef06029",
     "scripts/build_skill_bundle.py": "d0a0c971788bb937ab0c89d86ccc63c349dd6739867e945d41a901f2cb91727a",
     "scripts/bundle.py": "2a49c2cee0657078cb23378a21cd8cea5200e44722b7df22775d2d5e560f24b8",
     "scripts/check_sensitive_identifiers.py": "23a039fd8705f242530298de9fa342d03c5212577bfbc1127fcd98f91f6d558d",
@@ -52,7 +52,7 @@
     "src/goofish_bridge/account.py": "d41ead00fe81606e68978ad2905c2f7bcbdd2eb16f597100338aec0c00306283",
     "src/goofish_bridge/account_sync.py": "2a148dddd1e5d1eac7879418ef731ad01f224e58434e1f5181ed45c62c358584",
     "src/goofish_bridge/account_worker.py": "ef5c4db46df910985721930e33d0d32904c67014086529ad0eec4135cffeb3f1",
-    "src/goofish_bridge/bitbrowser_cookie.py": "7c89c52c8028e2e5f72ab1167096d6e546e21a4fc3552e4b219bc0c1957598cc",
+    "src/goofish_bridge/bitbrowser_cookie.py": "4bebb17a376637b70dea8604d66b13bcc5f1c3c55c9b7860d4f5077848fa1f37",
     "src/goofish_bridge/config.py": "d2971b8fe171fecfd342e4759758dd6a2015f2347aaf121bee6bfaad4d51a39b",
     "src/goofish_bridge/feishu_adapter.py": "9f5f476ee7834121b1d9987aab0a5a11cd4fee91b4ec1b421560f4b0ce0263d4",
     "src/goofish_bridge/goofish_adapter.py": "03d0d9b948d2ccebc45096069d9d01d4cf871a3ea89dfbc67fff6226ffe9c976",
@@ -103,7 +103,7 @@
     "tests/fixtures/stage0-sanitized.jsonl": "c57440133babeb30a1375181fe17998ab8b15621d1c71632561f39fa85aaafab",
     "tests/test_account_sync.py": "ca11dc3083620b44a5e9f7f18ead35cba678f6f5855c126da8252359ce4003e0",
     "tests/test_auth_login.py": "a0c9063ac68bcad9e66618f6c9dad3b5d4a8dde1f7c121e5bd6573b6f7bea79e",
-    "tests/test_bitbrowser_cookie.py": "e15e65384ed29e7715d7e5d86ea2523c5c4246dc6eaf747c9c479f03e2c5bed1",
+    "tests/test_bitbrowser_cookie.py": "63779b729d5f039e6e06971282aac875c6bb8e85f9e32bd996f633d8aa1d0bed",
     "tests/test_bitbrowser_network.py": "9cc3b0bb5f6c715ca2532755d1285b799651414d45688c017d4ee0f7b493f786",
     "tests/test_bridge_account.py": "70a35b1f91bfc2f636dfad808f5e66a2721f0b746f764749b777405cf2f01f80",
     "tests/test_bridge_config.py": "986c624a7962e93cf68da6085e590f191f39a4e57cd153f680fa7905c50024c5",
@@ -136,7 +136,7 @@
     "tests/test_sensitive_identifiers.py": "02cd1b147473008920ed18ca5b38137e351375ca8887669dfd2e3b2c89d71e38",
     "tests/test_session_bootstrap.py": "ab7ba88d476aadacc29d5544383fec7a82ef8ee4596a5c495d0393d695e8338f",
     "tests/test_sign.py": "751b3fa4c9c0b2420725b38342e49ad287c5405235ae86413d0e2902e1487c92",
-    "tests/test_skill_control.py": "dad4c495b6d17101962a7c3cb52a2947c7445795083c84d1c7bfb108d41f8255",
+    "tests/test_skill_control.py": "2b6c42e40abf2bfd350d5430fded70a64d271dddc15b90363459cb995fdea124",
     "tests/test_ws_codec.py": "62f770a9b87e43d160a15ebb35f8d0b2c4eec32ccf556ea4f9832434bf0b3538",
     "tests/test_ws_ready.py": "00328d7a14578a416585991f8da31f6f33a0647637cf33fad9c15a97ed6388bd",
     "uv.lock": "add30d42e9e22e2a3c78c5f9e7b589cb4200ae2011771077835115642d29a702"
