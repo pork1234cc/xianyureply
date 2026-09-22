@@ -102,3 +102,30 @@ def test_download_uses_message_resource_api_and_stream_limit(monkeypatch):
     monkeypatch.setattr(media, "MAX_IMAGE_BYTES", 4)
     with pytest.raises(media.MediaError, match="10 MiB"):
         media.download_image(None, "message", "image")
+
+
+def test_customer_image_download_is_limited_to_verified_cdn(monkeypatch):
+    calls = []
+
+    class Http(Response):
+        def get(self, url, **kwargs):
+            calls.append((url, kwargs))
+            return Response(data=picture("JPEG"))
+
+    monkeypatch.setattr(media.NetworkProfile, "http", lambda _: Http())
+    data = media.download_customer_image("https://img.alicdn.com/test.jpg")
+    assert data == picture("JPEG")
+    assert calls[0][1]["allow_redirects"] is False
+    with pytest.raises(media.MediaError):
+        media.download_customer_image("https://img.alicdn.com.evil.example/test.jpg")
+    assert len(calls) == 1
+
+
+def test_customer_image_webp_is_converted_for_feishu(monkeypatch):
+    class Http(Response):
+        def get(self, url, **kwargs):
+            return Response(data=picture("WEBP"))
+
+    monkeypatch.setattr(media.NetworkProfile, "http", lambda _: Http())
+    data = media.download_customer_image("https://img.alicdn.com/test.jpg")
+    assert media.inspect_image(data)[1:] == ("image/jpeg", 12, 20)

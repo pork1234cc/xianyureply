@@ -128,7 +128,14 @@ class Store:
           (delivery_id,idempotency_key,kind,inbox_message_id,card_key,text,created_at)
           VALUES(?,?,'CUSTOMER_REMINDER',?,?,?,?)""",
                         (uuid4().hex, f"reminder:{inbox_id}", inbox_id, card_key,
-                         self._reminder_text(account_name, customer_name, text), time.time()))
+                          self._reminder_text(account_name, customer_name, text), time.time()))
+
+    def _queue_customer_image_locked(self, card_key, inbox_id, image_url):
+        self.db.execute("""INSERT OR IGNORE INTO feishu_outbox
+          (delivery_id,idempotency_key,kind,inbox_message_id,card_key,text,created_at)
+          VALUES(?,?,'CUSTOMER_IMAGE',?,?,?,?)""",
+                        (uuid4().hex, f"customer-image:{inbox_id}", inbox_id,
+                         card_key, image_url, time.time()))
 
     def _append_card_locked(self, card_key, speaker, text, status=""):
         row = self.db.execute("SELECT * FROM feishu_cards WHERE card_key=?", (card_key,)).fetchone()
@@ -187,6 +194,18 @@ class Store:
                source_time, event["received_at"], event.get("customer_name") or "昵称未知",
                event["text"], event["message_type"], "OK" if valid else "ERROR", int(event.get("offline", False))))
             if not cursor.rowcount:
+                if valid and event.get("image_url"):
+                    existing = self.db.execute("""SELECT * FROM inbox_messages WHERE account_key=?
+                      AND account_uid=? AND cid=? AND source_message_id=?""",
+                                               (event["account_key"], event["account_uid"],
+                                                event["cid"], event["source_message_id"])).fetchone()
+                    if (existing and existing["parse_state"] == "OK"
+                            and existing["customer_uid"] == event["customer_uid"]):
+                        card_key = self._card_key(event["account_key"], event["account_uid"],
+                                                  event["cid"], event["customer_uid"])
+                        self.db.execute("UPDATE inbox_messages SET message_type='image' WHERE id=?",
+                                        (existing["id"],))
+                        self._queue_customer_image_locked(card_key, existing["id"], event["image_url"])
                 return None
             customer_name = event.get("customer_name") or "客户"
             if valid:
@@ -209,8 +228,10 @@ class Store:
                     self._queue_reminder_locked(card_key, inbox_id, account["name"], customer_name, event["text"])
                 else:
                     self._queue_card_locked({"card_key": card_key, "account_name": account["name"],
-                                             "customer_name": customer_name, "entries": entries,
-                                             "message_id": message_id, "expanded": 0}, inbox_id)
+                                              "customer_name": customer_name, "entries": entries,
+                                              "message_id": message_id, "expanded": 0}, inbox_id)
+                if event.get("image_url"):
+                    self._queue_customer_image_locked(card_key, inbox_id, event["image_url"])
             else:
                 self._notice(f"inbox:{inbox_id}",
                              f"{account['name']}：收到无法验证路由的消息，暂不能回复。", "ANOMALY", inbox_id)
@@ -228,7 +249,7 @@ class Store:
         if previous:
             return dict(previous)
         target = self.db.execute("""SELECT i.* FROM feishu_outbox o JOIN inbox_messages i
-           ON i.id=o.inbox_message_id WHERE o.feishu_message_id=? AND o.kind IN ('CUSTOMER','CUSTOMER_CARD','CUSTOMER_REMINDER')
+           ON i.id=o.inbox_message_id WHERE o.feishu_message_id=? AND o.kind IN ('CUSTOMER','CUSTOMER_CARD','CUSTOMER_REMINDER','CUSTOMER_IMAGE')
            AND o.state='SERVER_ACCEPTED' AND i.parse_state='OK'""", (event["parent_id"],)).fetchone()
         if not target:
             # 旧 schema 更新可能改为重建卡片；当前卡片映射同样是已确认的固定路由。
@@ -413,7 +434,8 @@ class Store:
     def claim_outbox(self):
         row = self.db.execute("""SELECT o.* FROM feishu_outbox o
           LEFT JOIN feishu_cards c ON c.card_key=o.card_key
-          WHERE o.state='QUEUED' AND (o.kind!='CUSTOMER_REMINDER' OR c.message_id IS NOT NULL)
+           WHERE o.state='QUEUED' AND (o.kind NOT IN ('CUSTOMER_REMINDER','CUSTOMER_IMAGE')
+             OR c.message_id IS NOT NULL)
           ORDER BY o.created_at,o.rowid LIMIT 1""").fetchone()
         if not row:
             return None
@@ -430,7 +452,11 @@ class Store:
                                 text=self._reminder_text(self.account(inbox["account_key"])["name"],
                                                          inbox["customer_name"], inbox["text"]))
                 self.db.execute("UPDATE feishu_outbox SET kind=?,target_message_id=?,text=? WHERE delivery_id=?",
-                                (delivery["kind"], delivery["target_message_id"], delivery["text"], row["delivery_id"]))
+                                 (delivery["kind"], delivery["target_message_id"], delivery["text"], row["delivery_id"]))
+            elif card and card["message_id"] and row["kind"] == "CUSTOMER_IMAGE":
+                delivery["target_message_id"] = card["message_id"]
+                self.db.execute("UPDATE feishu_outbox SET target_message_id=? WHERE delivery_id=?",
+                                (card["message_id"], row["delivery_id"]))
             self.db.execute("UPDATE feishu_outbox SET state='DISPATCHING' WHERE delivery_id=?", (row["delivery_id"],))
         return delivery
 
@@ -447,7 +473,16 @@ class Store:
                 message_id or (row["target_message_id"] if row and row["kind"] == "CUSTOMER_CARD" else None))
             self.db.execute("""UPDATE feishu_outbox SET state=?,feishu_message_id=?,error=?
                WHERE delivery_id=? AND state='DISPATCHING'""",
-                             (state, stored_message_id, error, delivery))
+                              (state, stored_message_id, error, delivery))
+            if row and row["kind"] == "CUSTOMER_IMAGE" and state in {"FAILED", "UNKNOWN"}:
+                inbox = self.db.execute("SELECT * FROM inbox_messages WHERE id=?",
+                                        (row["inbox_message_id"],)).fetchone()
+                account_name = self.account(inbox["account_key"])["name"] if inbox else "闲鱼账号"
+                if state == "FAILED":
+                    text = f"{account_name}：客户图片转发失败（{error}），请到闲鱼查看原图。"
+                else:
+                    text = f"{account_name}：客户图片投递结果待确认，请先核对飞书，不要重复发送。"
+                self._notice(f"customer-image-error:{delivery}", text, "NOTICE", row["inbox_message_id"])
             if row and row["kind"] in {"CUSTOMER_CARD", "CUSTOMER_CARD_UPDATE"} and state == "SERVER_ACCEPTED":
                 current_message_id = message_id or row["target_message_id"]
                 self.db.execute("UPDATE feishu_cards SET message_id=?,updated_at=? WHERE card_key=?",

@@ -12,6 +12,26 @@ import pytest
 from goofish_bridge import account_worker
 
 
+@pytest.mark.asyncio
+async def test_image_summary_triggers_history_fetch(monkeypatch):
+    worker = account_worker.Worker.__new__(account_worker.Worker)
+    worker.uid = "seller"
+    worker.pending_history = {}
+    seen = []
+
+    async def ingest(event):
+        seen.append(event)
+
+    worker.ingest = ingest
+    image = {"cid": "chat", "customer_uid": "buyer", "source_message_id": "image-id",
+             "text": "[图片]", "message_type": "text_or_summary"}
+    monkeypatch.setattr(account_worker, "from_push", lambda *args: image)
+    worker.key, worker.timezone = "A1", "UTC"
+    await worker.decoded({"1": {}})
+    assert seen == [image]
+    assert worker.pending_history == {"chat": "image-id"}
+
+
 def test_worker_applies_configured_rate_limit(monkeypatch, tmp_path):
     config = SimpleNamespace(raw={"bridge": {"write_rpm_per_account": 12}, "app": {}})
     initialized = []

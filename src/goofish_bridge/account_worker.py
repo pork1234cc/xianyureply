@@ -73,6 +73,10 @@ class Worker:
         event = from_push(raw, self.key, self.uid, self.timezone)
         if event:
             await self.ingest(event)
+            if (event["message_type"] == "text_or_summary" and event["text"] == "[图片]"
+                    and event.get("customer_uid") != self.uid and event.get("cid")):
+                # 轻量推送只有摘要；补拉同一消息 ID 才能取得真实图片资源。
+                self.pending_history[event["cid"]] = event.get("source_message_id") or ""
             return
         meta = extract_meta_event(raw)
         if meta and meta["event"] == "new_msg":

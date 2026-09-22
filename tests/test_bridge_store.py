@@ -43,6 +43,37 @@ def test_inbox_atomic_dedup_but_same_text_is_not_identity(store):
     assert store.db.execute("SELECT count(*) FROM feishu_outbox").fetchone()[0] == 2
 
 
+def test_image_history_enriches_summary_and_queues_replyable_image(store):
+    summary = incoming(text="[图片]")
+    summary["message_type"] = "text_or_summary"
+    forward(store, summary, "original-card")
+    image = incoming(text="客户发送了一张图片，请到闲鱼查看。")
+    image.update(message_type="image", image_url="https://img.alicdn.com/test.jpg")
+    assert store.ingest(image) is None
+    assert store.ingest(image) is None
+    delivery = store.claim_outbox()
+    assert delivery["kind"] == "CUSTOMER_IMAGE"
+    assert delivery["target_message_id"] == "original-card"
+    assert delivery["text"] == image["image_url"]
+    store.finish_outbox(delivery["delivery_id"], "SERVER_ACCEPTED", "image-message")
+    routed = store.receive_reply(reply(parent="image-message"), now=300)
+    assert (routed["account_key"], routed["cid"], routed["customer_uid"]) == (
+        "A1", "chat", "buyer")
+    assert store.claim_outbox() is None
+
+
+def test_failed_customer_image_sends_clear_fallback_notice(store):
+    image = incoming(text="客户发送了一张图片，请到闲鱼查看。")
+    image.update(message_type="image", image_url="https://img.alicdn.com/test.jpg")
+    forward(store, image, "original-card")
+    delivery = store.claim_outbox()
+    store.finish_outbox(delivery["delivery_id"], "FAILED", error="飞书应用缺少 im:resource 权限")
+    notice = store.claim_outbox()
+    assert notice["kind"] == "NOTICE"
+    assert "im:resource" in notice["text"]
+    assert "闲鱼查看原图" in notice["text"]
+
+
 def test_feishu_inbox_display_hides_internal_ids_and_shows_account_name(store):
     store.bind_account("A1", "uid-a", "北美草原狼", now=100)
     forward(store, incoming(text="请问还有货吗？"), "forward-display")

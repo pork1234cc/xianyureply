@@ -6,9 +6,26 @@ import base64
 import json
 import time
 from datetime import UTC, datetime
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from goofish_bridge.goofish_adapter import normalize_id
+
+
+def _image_url(payload):
+    image = payload.get("image") if isinstance(payload, dict) else None
+    pics = image.get("pics") if isinstance(image, dict) else None
+    if not isinstance(pics, list) or len(pics) != 1 or not isinstance(pics[0], dict):
+        return ""
+    raw = pics[0].get("url")
+    if not isinstance(raw, str) or not raw or len(raw) > 2048:
+        return ""
+    url = "https:" + raw if raw.startswith("//") else raw
+    parsed = urlsplit(url)
+    if (parsed.scheme != "https" or parsed.hostname != "img.alicdn.com"
+            or not parsed.path or parsed.username or parsed.password or parsed.port not in (None, 443)):
+        return ""
+    return url
 
 
 def _event(key, uid, cid, customer, source, source_time, text, nickname, kind, timezone, offline=False):
@@ -57,7 +74,7 @@ def from_history(model, key, uid, timezone="Asia/Shanghai", offline=True):
     message = model.get("message") or {}
     ext = message.get("extension") or {}
     content = message.get("content") or {}
-    text, kind = "", "unsupported"
+    text, kind, image_url = "", "unsupported", ""
     try:
         custom = content.get("custom") or {}
         if custom.get("data"):
@@ -67,10 +84,17 @@ def from_history(model, key, uid, timezone="Asia/Shanghai", offline=True):
                 kind = "text"
             elif payload.get("contentType") == 2:
                 text, kind = "客户发送了一张图片，请到闲鱼查看。", "image"
+                image_url = _image_url(payload)
         elif content.get("contentType") == 1:
             text, kind = (content.get("text") or {}).get("text", ""), "text"
+        elif content.get("contentType") == 2:
+            text, kind = "客户发送了一张图片，请到闲鱼查看。", "image"
+            image_url = _image_url(content)
     except (ValueError, TypeError, UnicodeDecodeError, AttributeError):
         text = "收到暂不支持解析的消息，请到闲鱼查看。"
-    return _event(key, uid, message.get("cid", ""), ext.get("senderUserId", ""),
-                  message.get("messageId"), message.get("createAt"), text,
-                  ext.get("reminderTitle", ""), kind, timezone, offline)
+    event = _event(key, uid, message.get("cid", ""), ext.get("senderUserId", ""),
+                   message.get("messageId"), message.get("createAt"), text,
+                   ext.get("reminderTitle", ""), kind, timezone, offline)
+    if image_url and event["parse_state"] == "OK":
+        event["image_url"] = image_url
+    return event

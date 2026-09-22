@@ -163,3 +163,57 @@ def test_customer_reminder_uses_quote_api_and_never_patches_card(outcome, expect
     assert json.loads(calls[0].request_body.content) == {"text": text}
     assert calls[0].request_body.uuid == "stable-uuid"
     assert calls[0].request_body.reply_in_thread is False
+
+
+def test_customer_image_is_uploaded_and_replied_to_original_card(monkeypatch):
+    from goofish_bridge import media
+    from goofish_bridge.feishu_adapter import FeishuRuntime
+
+    requests = []
+
+    def upload(request):
+        requests.append(("upload", request))
+        assert request.request_body.image_type == "message"
+        assert request.request_body.image.name == "customer.jpg"
+        assert request.request_body.image.read() == b"image-bytes"
+        return SimpleNamespace(success=lambda: True, data=SimpleNamespace(image_key="image-key"))
+
+    def reply_image(request):
+        requests.append(("reply", request))
+        return SimpleNamespace(success=lambda: True, data=SimpleNamespace(message_id="image-message"))
+
+    monkeypatch.setattr(media, "download_customer_image", lambda _: b"image-bytes")
+    monkeypatch.setattr(media, "inspect_image", lambda _: ("jpg", "image/jpeg", 12, 20))
+    runtime = FeishuRuntime.__new__(FeishuRuntime)
+    runtime.binding = {"chat_id": "owner-chat"}
+    runtime.api = SimpleNamespace(im=SimpleNamespace(v1=SimpleNamespace(
+        image=SimpleNamespace(create=upload), message=SimpleNamespace(reply=reply_image))))
+    state, message_id, error = runtime.send({"kind": "CUSTOMER_IMAGE", "delivery_id": "fixed-id",
+                                                  "target_message_id": "original-card",
+                                                  "text": "https://img.alicdn.com/test.jpg"})
+    assert (state, message_id, error) == ("SERVER_ACCEPTED", "image-message", "")
+    assert [kind for kind, _ in requests] == ["upload", "reply"]
+    sent = requests[1][1]
+    assert sent.message_id == "original-card"
+    assert sent.request_body.msg_type == "image"
+    assert json.loads(sent.request_body.content) == {"image_key": "image-key"}
+    assert sent.request_body.uuid == "fixed-id"
+
+
+def test_customer_image_missing_resource_scope_is_actionable(monkeypatch):
+    from goofish_bridge import media
+    from goofish_bridge.feishu_adapter import FeishuRuntime
+
+    monkeypatch.setattr(media, "download_customer_image", lambda _: b"image-bytes")
+    monkeypatch.setattr(media, "inspect_image", lambda _: ("jpg", "image/jpeg", 12, 20))
+    runtime = FeishuRuntime.__new__(FeishuRuntime)
+    runtime.binding = {"chat_id": "owner-chat"}
+    runtime.api = SimpleNamespace(im=SimpleNamespace(v1=SimpleNamespace(
+        image=SimpleNamespace(create=lambda _: SimpleNamespace(
+            success=lambda: False, code=99991672)))))
+    state, message_id, error = runtime.send({"kind": "CUSTOMER_IMAGE", "delivery_id": "fixed-id",
+                                                  "target_message_id": "original-card",
+                                                  "text": "https://img.alicdn.com/test.jpg"})
+    assert state == "FAILED"
+    assert message_id is None
+    assert "im:resource" in error

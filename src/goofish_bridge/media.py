@@ -78,6 +78,66 @@ def download_image(config, message_id: str, image_key: str) -> bytes:
         raise MediaError("飞书图片下载失败，请检查网络及应用权限") from None
 
 
+def download_customer_image(url: str) -> bytes:
+    """从已验证的闲鱼图片 CDN 下载客户图片，不跟随重定向。"""
+    if not isinstance(url, str) or len(url) > 2048:
+        raise MediaError("闲鱼图片地址无效，未转发原图")
+    try:
+        parsed = urlsplit(url)
+        if (parsed.scheme != "https" or parsed.hostname != "img.alicdn.com"
+                or not parsed.path or parsed.username or parsed.password
+                or parsed.port not in (None, 443) or parsed.fragment):
+            raise MediaError("闲鱼图片地址未通过校验，未转发原图")
+        with (NetworkProfile().http() as http,
+              http.get(url, stream=True, timeout=(10, 20), allow_redirects=False) as response):
+            if response.status_code != 200:
+                raise MediaError("闲鱼图片下载失败，请到闲鱼查看原图")
+            data = bytearray()
+            deadline = time.monotonic() + 60
+            for chunk in response.iter_content(64 * 1024):
+                data.extend(chunk)
+                if len(data) > MAX_IMAGE_BYTES:
+                    raise MediaError("客户图片超过 10 MiB，未转发原图")
+                if time.monotonic() > deadline:
+                    raise MediaError("闲鱼图片下载超时，未转发原图")
+        return normalize_customer_image(bytes(data))
+    except (requests.RequestException, ValueError) as exc:
+        if isinstance(exc, MediaError):
+            raise
+        raise MediaError("闲鱼图片下载失败，请到闲鱼查看原图") from None
+
+
+def normalize_customer_image(data: bytes) -> bytes:
+    """闲鱼 CDN 可能返回 WebP；仅对这种格式在内存中转换为飞书可用图片。"""
+    if not data or len(data) > MAX_IMAGE_BYTES:
+        raise MediaError("客户图片为空或超过 10 MiB，未转发原图")
+    try:
+        with Image.open(BytesIO(data)) as picture:
+            width, height = picture.size
+            if width <= 0 or height <= 0 or width * height > MAX_IMAGE_PIXELS:
+                raise MediaError("客户图片超过 2500 万像素，未转发原图")
+            if getattr(picture, "n_frames", 1) != 1:
+                raise MediaError("暂不支持动态客户图片，请到闲鱼查看原图")
+            if picture.format in {"PNG", "JPEG"}:
+                inspect_image(data)
+                return data
+            if picture.format != "WEBP":
+                raise MediaError("暂不支持此客户图片格式，请到闲鱼查看原图")
+            picture.load()
+            output = BytesIO()
+            if "A" in picture.getbands():
+                picture.convert("RGBA").save(output, format="PNG")
+            else:
+                picture.convert("RGB").save(output, format="JPEG", quality=90)
+            normalized = output.getvalue()
+            inspect_image(normalized)
+            return normalized
+    except MediaError:
+        raise
+    except (UnidentifiedImageError, OSError, ValueError, SyntaxError, Image.DecompressionBombError):
+        raise MediaError("客户图片损坏或格式无法识别，请到闲鱼查看原图") from None
+
+
 def upload_image(session, data: bytes) -> dict:
     """复用账号的 HTTP Session，继承 Cookie、代理及客户端声明。"""
     extension, mime, width, height = inspect_image(data)

@@ -7,6 +7,7 @@ import json
 import os
 import threading
 from functools import partial
+from io import BytesIO
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -260,6 +261,8 @@ class FeishuRuntime:
 
     def send(self, delivery):
         from lark_oapi.api.im.v1 import (
+            CreateImageRequest,
+            CreateImageRequestBody,
             CreateMessageRequest,
             CreateMessageRequestBody,
             PatchMessageRequest,
@@ -268,8 +271,32 @@ class FeishuRuntime:
             ReplyMessageRequestBody,
         )
 
+        from goofish_bridge.media import MediaError, download_customer_image, inspect_image
         try:
-            if delivery["kind"] == "CUSTOMER_REMINDER":
+            if delivery["kind"] == "CUSTOMER_IMAGE":
+                if not delivery.get("target_message_id"):
+                    return "FAILED", None, "缺少原客户卡片，图片未发送"
+                data = download_customer_image(delivery["text"])
+                extension = inspect_image(data)[0]
+                picture = BytesIO(data)
+                picture.name = f"customer.{extension}"
+                upload = CreateImageRequest.builder().request_body(
+                    CreateImageRequestBody.builder().image_type("message")
+                    .image(picture).build()).build()
+                uploaded = self.api.im.v1.image.create(upload)
+                if not uploaded.success():
+                    if uploaded.code == 99991672:
+                        return "FAILED", None, "飞书应用缺少 im:resource 图片资源权限，请开通并发布应用版本"
+                    return "FAILED", None, f"飞书图片上传失败，接口代码 {uploaded.code}"
+                image_key = getattr(getattr(uploaded, "data", None), "image_key", None)
+                if not isinstance(image_key, str) or not image_key:
+                    return "FAILED", None, "飞书图片上传未返回资源标识"
+                request = ReplyMessageRequest.builder().message_id(delivery["target_message_id"]).request_body(
+                    ReplyMessageRequestBody.builder().msg_type("image")
+                    .content(json.dumps({"image_key": image_key}, ensure_ascii=False))
+                    .reply_in_thread(False).uuid(delivery["delivery_id"]).build()).build()
+                response = self.api.im.v1.message.reply(request)
+            elif delivery["kind"] == "CUSTOMER_REMINDER":
                 if not delivery.get("target_message_id"):
                     return "FAILED", None, "缺少原客户卡片，未发送引用提醒"
                 request = ReplyMessageRequest.builder().message_id(delivery["target_message_id"]).request_body(
@@ -312,6 +339,8 @@ class FeishuRuntime:
                 return "UNKNOWN", None, "成功回包缺少消息 ID，需要人工核对"
             detail = getattr(response, "msg", "") or ""
             return "FAILED", None, f"接口代码 {response.code}{(': ' + detail) if detail else ''}"
+        except MediaError as exc:
+            return "FAILED", None, str(exc)
         except Exception as exc:
             return "UNKNOWN", None, type(exc).__name__
 
